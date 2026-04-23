@@ -1,13 +1,304 @@
 ---
 title: "Final Project - Classifying New York Census Tracts"
 author: "Sunduss Hamdan and Kaela Girod"
-format: html
+format:
+  html:
+    embed-resources: true
 editor: visual
+editor_options: 
+  chunk_output_type: console
 ---
 
+## 1. Introduction
+New York City is one of the most unequal cities in the United States. While some 
+neighborhoods are home to some of the wealthiest residents in the world, others 
+face persistent poverty, limited job opportunities, and inadequate access to 
+resources. Despite this stark divide, policymakers tasked with deciding where to 
+direct funding and interventions often rely on a single measure, such as average 
+income or the share of residents living below the poverty line, to characterize 
+neighborhoods and determine need. The problem with this approach is that it 
+flattens the complexity of what makes neighborhoods genuinely different from one 
+another. A neighborhood with a high poverty rate but stable housing, good transit, 
+and strong employment access is a very different place from one with the same 
+poverty rate but high vacancy, poor connectivity, and limited opportunity. Treating 
+them the same way leads to poorly targeted policies. This project takes a different 
+approach: we use data-driven methods, specifically using three models 
+(Principle Component Analysis, K-means clustering, and Gaussian Mixture Modeling) to identify distinct neighborhood typologies 
+across New York City's census tracts, asking what distinct socioeconomic typologies 
+exist across NYC census tracts, and what combinations of demographic and economic 
+characteristics define them.
 
+## 2. Background, Policy Relevance, and Literature
+New York City's inequality is well documented. The top three percent of wage earners 
+in the city have seen their incomes grow substantially, while low-wage workers have 
+faced increasing risk of poverty (Center for New York City Affairs, 2024). This 
+inequality is not just economic, it is also deeply racial. The New York City 
+Comptroller (2023) reports that the racial wealth gap in New York is among the most 
+pronounced of any major American city, with Black and Hispanic residents 
+significantly less likely to own homes, hold financial assets, or access 
+higher-paying jobs than their white counterparts. These disparities do not play out 
+evenly across the city; they are concentrated in particular neighborhoods, making 
+the neighborhood itself a critical unit of analysis for anyone interested in 
+understanding or addressing inequality in New York City.
+
+Despite this, the tools that policymakers most commonly use to identify and target 
+disadvantaged neighborhoods remain blunt. Relying on a single indicator like median 
+income or the poverty rate to decide where to direct resources misses the fact that 
+neighborhoods can be disadvantaged in very different ways. A neighborhood with high 
+poverty but stable housing and good transit access has different needs, and 
+different strengths, than one with similar poverty levels but high vacancy rates, 
+poor connectivity, and a declining population. Effective place-based policy requires 
+a more nuanced understanding of what makes each neighborhood distinct.
+
+The academic literature on neighborhood classification offers a more rigorous 
+alternative. Scally et al. (2021) used data-driven classification methods to 
+identify distinct typologies among rural census tracts across the United States, 
+grouping communities by their combinations of characteristics rather than by any 
+single measure. Their central insight, that communities cluster into meaningfully 
+different types, and that policymakers should act on that structure, forms the 
+foundation of our approach. While their work focused on rural America, the core 
+logic translates directly to an urban setting: New York City's neighborhoods are no 
+more uniform than rural communities, and a typology-based approach offers the same 
+potential to improve how investments are targeted.
 
 ```{r}
-
+#| echo: false
+#| message: false
+#| warning: false
+### MAYBE INCLUDE SOME EXPLORATORY AND EXPLANATORY ANALYSIS VISUALS OF KEY VARIABLES OR DESCRIPTIVE STATS ON NEW YORK - SUNDUSS CAN DO THIS ONCE THE DATASET IS UP AND RUNNING 
 ```
 
+## 3. Data and Variable Selection - EDIT THE BELOW ONCE WE ADD ADDITIONAL VARIABLES TO THE DATASET E.G., SHOOTINGS 
+Our primary dataset comes from the 2020–2024 American Community Survey (ACS) 
+5-year estimates, which we access via the Census Bureau API at the census tract 
+level across all five boroughs of New York City. The ACS 5-year estimates pool 
+responses collected over a five-year period, making them the most reliable source 
+of small-area data for geographies as granular as census tracts. Following Scally 
+et al. (2021), we select variables across five thematic dimensions - economic 
+conditions, educational attainment, housing, racial and ethnic composition, and 
+mobility - to capture what makes neighborhoods genuinely distinct from one another, 
+rather than relying on any single measure like income or poverty alone.
+
+Many ACS variables are provided as raw counts, which reflect tract population size 
+as much as neighborhood character. We therefore convert these to shares or rates. 
+For example, expressing the number of residents below the poverty line as a 
+proportion of all residents for whom poverty status is determined. Two variables, 
+median household income and median gross rent, are kept as dollar values since they 
+are already directly comparable across tracts. Mean commute time is calculated by 
+dividing total travel time (B08013) by the number of workers aged 16 and over who 
+commute outside the home (B08012), which is consistent with the Census Bureau's 
+own approach to computing this measure.
+
+We considered but decided to exclude two variables. First, the Gini coefficient (B19083), 
+which measures income inequality within a tract, was dropped because it captures 
+information already covered by our combination of median income and poverty rate. 
+Second, age structure variables (B01001) were excluded because including multiple 
+age-by-sex breakdown columns would add complexity without adding interpretive value; 
+educational attainment serves as a cleaner proxy for the working-age population. 
+Both decisions follow a simple guiding principle: where two variables tell 
+essentially the same story, we keep the one that is easier to interpret in a 
+policy context. [EXPLAIN WHY WE DIDN'T CHOOSE THE ARRESTS VARIABLE AND USED 
+SHOOTINGS INSTEAD]
+
+In addition to our primary 2020–2024 dataset, we also extract the 2018–2022 ACS 
+5-year estimates for the same tracts. This allows us to compute four supplementary 
+change variables in median income, median rent, poverty rate, and unemployment 
+rate, that measure how conditions shifted between the two periods. These change 
+variables are not used as inputs to our clustering models; instead, they are used 
+afterwards to help describe and validate the typologies we identify. One limitation 
+worth noting is that because both ACS vintages include data collected between 2020 
+and 2022, they share three overlapping years of data. This means the change 
+variables capture a narrower window of genuine change than the four-year gap between 
+the vintage endpoints might suggest. This is a structural feature of ACS 5-year 
+estimates rather than a choice we made, and we flag it as a limitation of our 
+approach.
+
+Our [EDIT WITH OUR ACTUAL NO. OF VARIABLES] modelling variables are used as inputs 
+to our dimensionality reduction and clustering models. Census tracts with missing values 
+on any modelling variable are excluded from the analysis. Missing data arise most 
+commonly in tracts that are entirely renter-occupied, which have no median home 
+value, and in tracts with very few commuters, which have no reliable commute time 
+estimate.
+
+```{r}
+#| label: tbl-variables
+#| tbl-cap: "Variable Selection and Justification"
+#| echo: false
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(kableExtra)
+
+variable_table <- tribble(
+  ~Dimension,        ~Variable,                  ~Construction,                                          ~Justification,
+  "Economic",        "Poverty rate",              "Pop. below poverty line / poverty universe total",     "Core deprivation indicator; directly named in proposal",
+  "Economic",        "Unemployment rate",         "Unemployed civilians / civilian labor force",          "Captures labor market exclusion distinct from income poverty",
+  "Economic",        "Median household income",   "Level (dollars)",                                      "Primary measure of economic resources; retained as level as it is already comparable across tracts",
+  "Education",       "Bachelor's degree share",   "Bachelor's holders / pop. 25+",                       "Captures human capital; strongly associated with neighborhood economic trajectory",
+  "Housing",         "Median gross rent",         "Level (dollars)",                                      "Directly named in proposal; key measure of housing cost burden",
+  "Housing",         "Median home value",         "Level (dollars)",                                      "Complements rent; distinguishes owner- vs. renter-dominated neighborhoods",
+  "Housing",         "Renter-occupied share",     "Renter units / total occupied units",                  "Tenure structure is a fundamental dimension of NYC neighborhood type",
+  "Housing",         "Vacancy rate",              "Vacant units / total housing units",                   "Indicator of disinvestment; key differentiator between declining and stable neighborhoods",
+  "Race/Ethnicity",  "Share White",               "White alone / total population",                       "Captures racial composition; connected to NYC's documented racial wealth gap",
+  "Race/Ethnicity",  "Share Black",               "Black alone / total population",                       "As above",
+  "Race/Ethnicity",  "Share Hispanic",            "Hispanic or Latino / total population (B03003)",       "Uses B03003 rather than B02001 as Hispanic identity is an ethnicity not captured by race alone",
+  "Race/Ethnicity",  "Share foreign-born",        "Foreign-born / total population",                      "NYC's immigrant geography is a major structural driver of neighborhood type",
+  "Mobility",        "Mean commute time",         "Aggregate travel time / commuting workers 16+",        "Directly named in proposal; proxy for transit access and economic integration",
+  "Supplementary",   "Change in median income",   "% change, 2022-2024 vintages",                         "Post-hoc cluster validation only; not a modelling input",
+  "Supplementary",   "Change in median rent",     "% change, 2022-2024 vintages",                         "As above",
+  "Supplementary",   "Change in poverty rate",    "Percentage point change",                              "As above; percentage point change is appropriate for rates",
+  "Supplementary",   "Change in unemployment",    "Percentage point change",                              "As above")
+
+variable_table |>
+  kbl(
+    col.names = c("Dimension", "Variable", "Construction", "Justification"),
+    align = c("l", "l", "l", "l")) |>
+   kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    full_width = TRUE,
+    font_size = 13) |>
+  column_spec(1, bold = TRUE, width = "10em") |>
+  column_spec(2, width = "12em") |>
+  column_spec(3, width = "14em") |>
+  column_spec(4, width = "20em") |>
+  row_spec(0, bold = TRUE, background = "#2c3e50", color = "white") |>
+  pack_rows("Modelling Variables", 1, 13) |>
+  pack_rows("Supplementary Variables — Used After Clustering To Validate Typologies, Not As Modelling Inputs", 14, 17)
+```
+
+## 4. Methodology
+Our analysis uses three methods in sequence: Principal Component Analysis (PCA) 
+to reduce the complexity of our data, K-means clustering to identify an initial 
+set of neighborhood groups, and Gaussian Mixture Modeling (GMM) to produce a 
+more statistically rigorous final classification. Each step is described below.
+
+### 4.1. Step 1: Dimensionality Reduction with PCA
+We begin with [INSERT NO. OF FINAL VARIABLES] variables across five thematic dimensions. Many of these 
+variables are likely to be correlated with one another. For example, poverty 
+rate and unemployment rate tend to move together, as do median income and 
+bachelor's degree share. When highly correlated variables are fed directly into 
+a clustering algorithm, they effectively get counted twice, overweighting the 
+dimension of variation they share and distorting the resulting groups.
+
+To address this, we use Principal Component Analysis (PCA) before clustering. 
+PCA takes our [NO. OF VARIABLES] variables and transforms them into a smaller set of new 
+variables called principal components. Each component is a weighted combination 
+of the original variables, and the components are constructed so that they are 
+uncorrelated with one another. The first component captures the largest share 
+of overall variation in the data, the second captures the next largest share, 
+and so on. Together, a small number of components can often represent most of 
+the information in the original data with much less redundancy. Because our variables are measured in very different units (dollars, 
+percentages, minutes) we normalize all variables before running PCA by 
+subtracting the mean and dividing by the standard deviation so that no single variable dominates due to its scale alone.
+
+To decide how many components to retain, we use a scree plot and inspect the 
+cumulative proportion of variance explained by each additional component. We 
+retain enough components to explain at least 80% [THIS WILL NEED TO BE CHANGED WITH OUR ACTUAL %] of the total variation in the 
+data, following standard practice. The retained components are then passed 
+forward as inputs to the clustering stage.
+
+### 4.2. Step 2: K-Means Clustering
+
+We use K-means clustering as our first clustering step. K-means works by 
+grouping census tracts into a fixed number of clusters, where each tract is 
+assigned to the cluster whose center (called the centroid) it is closest to. 
+
+The algorithm works as follows:
+1. A set of K centroids are placed randomly in the data space
+2. Each tract is assigned to its nearest centroid based on Euclidean distance
+3. The centroids are recalculated as the mean of all tracts assigned to them
+4. Steps 2 and 3 repeat until no tracts change cluster
+
+Because the starting positions of the centroids are random, the results of 
+K-means are not fully deterministic, running the algorithm twice can produce 
+different solutions. We address this by using 100 random starts (`nstart = 100`) 
+and retaining the best solution, which is standard practice.
+
+K-means also requires us to specify the number of clusters K in advance. To 
+choose K, we use three complementary methods. The first is the total 
+within-cluster sum of squares, which measures how tightly packed each cluster 
+is, we look for an "elbow" in the plot where adding more clusters stops 
+producing meaningful improvements. The second is the average silhouette width, 
+which measures how well each tract fits its assigned cluster compared to the 
+nearest alternative cluster, with higher values indicating better-defined 
+clusters. The third is the gap statistic, which compares the within-cluster 
+dispersion to a reference distribution representing data with no real cluster 
+structure, with higher values indicating more meaningful clusters. Where these 
+three methods agree, we have greater confidence in our chosen K.
+
+We note two important limitations of K-means. First, it assigns every tract to 
+exactly one cluster with no measure of uncertainty; a tract that sits on the 
+boundary between two neighborhood types is treated the same as one that sits 
+squarely in the middle of a cluster. Second, as Milechin et al. (2024) found in 
+a closely related study, the statistically optimal number of clusters and the 
+most interpretable number are not always the same. We therefore treat K-means 
+as an exploratory step and use its results to inform, but not determine, our 
+final model.
+
+### 4.3. Step 3: Gaussian Mixture Modeling
+
+Our final and primary clustering method is Gaussian Mixture Modeling (GMM), 
+implemented using `library(mclust)`. GMM extends the logic of K-means in two 
+important ways that make it better suited to our goals.
+
+First, instead of measuring the distance from each tract to a centroid, GMM 
+models each cluster as a multivariate normal distribution, meaning each cluster 
+has its own center and its own shape, capturing the spread and correlation 
+structure of the tracts within it. Tracts that are close to the center of a 
+cluster's distribution are more likely to belong to it; tracts far from the 
+center are less likely.
+
+Second, GMM produces soft assignments rather than hard ones. Rather than 
+assigning each tract definitively to a single cluster, GMM estimates the 
+probability that each tract belongs to each cluster. These probabilities (called 
+responsibilities) sum to one for each tract. A tract with a responsibility of 
+0.95 for cluster 3 belongs there with high confidence; a tract with 
+responsibilities of 0.52 and 0.48 across two clusters is genuinely ambiguous, 
+and GMM makes that uncertainty visible rather than hiding it.
+
+To select the number of clusters, we use the Bayesian Information Criterion 
+(BIC). BIC works by balancing model fit against model complexity. A model with 
+more clusters will always fit the data better, but BIC penalizes the additional 
+parameters required, steering us toward solutions that are as simple as possible 
+while still capturing meaningful structure in the data. In `library(mclust)`, 
+the function automatically tries between 1 and 9 clusters across 14 different 
+variance model specifications, and we select the model with the highest BIC 
+value reported by the package. One small technical note: the standard statistical 
+definition of BIC says lower values are better, but the library(mclust) package 
+displays BIC with the opposite sign, meaning we look for the highest value on its 
+output plots. Nevertheless, the end result is the same; we are still selecting the model that best balances fit and simplicity.
+As with K-means, we do not automatically accept the number of clusters that scores best on BIC. If the statistically preferred solution produces neighborhood types that are too similar to one another to be meaningfully different in a policy context, we will consider a solution with fewer clusters and explain our reasoning for doing so.
+
+## 5. Results
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+### INCLUDE VISUALS HERE
+```
+
+## 6. Discussion
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+### INCLUDE VISUALS HERE
+```
+
+## 7. Policy Implications [combine with conclusion if needs be]
+
+## 8. Conclusion
+
+## References
+Center for New York City Affairs. "While the Top Three Percent of Wage Earners Get Richer, New York City's Low Wage Workers Risk Greater Poverty." 2024. https://www.centernyc.org/reports-briefs/while-the-top-three-percent-of-wage-earners-get-richer-new-york-citys-low-wage-workers-risk-greater-poverty
+
+New York City Comptroller. "The Racial Wealth Gap in New York." December 6, 2023. https://comptroller.nyc.gov/reports/the-racial-wealth-gap-in-new-york/
+
+Scally, Corianne Payton, Amanda Gold, Yipeng Su, Jorge Morales-Burnett, Eric Burnstein, and Patrick Spauster. "Reenvisioning Rural America: How to Invest in the Strengths and Potential of Rural Communities." 2021. https://reenvisioning-rural-america.urban.org/
+
+U.S. Census Bureau. American Community Survey 5-Year Estimates, 2018–2022 and 2020–2024. Accessed via Census Bureau API using tidycensus in R.
+
+Zewdie, Hiwot Y., Jamaica R. Robinson, Marc A. Adams, Anjum Hajat, Jana A. Hirsch, Brian E. Saelens, and Stephen J. Mooney. "A Tale of Many Neighborhoods: Latent Profile Analysis to Derive a National Neighborhood Typology for the US." Health & Place 86 (March 2024): 103209. https://pubmed.ncbi.nlm.nih.gov/38408408/
