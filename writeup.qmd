@@ -1,0 +1,13 @@
+---
+title: "Final Project - Classifying New York Census Tracts"
+author: "Sunduss Hamdan and Kaela Girod"
+format: html
+editor: visual
+---
+
+
+
+```{r}
+
+```
+

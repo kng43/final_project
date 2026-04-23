@@ -15,12 +15,13 @@ variable_names <- load_variables(2024, "acs5")
 # population with a bachelor’s degree - B15003_022
 # population below the poverty line - B17020_002
 
-cook <- get_acs(
-  geography = "county",
+nyc <- get_acs(
+  geography = "tract",
   variables = c("B19013_001E", "B15003_022E", "B17020_002E"),
-  year = 2019,
+  year = 2022,
   output = "wide",
-  state = "IL",
-  county = "Cook",
-  key = credential)
+  state = "NY",
+  county = c("Kings", "Queens", "Richmond", "Bronx", "New York"),
+  key = credential,
+  geometry = TRUE)
 
