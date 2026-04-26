@@ -1,18 +1,187 @@
 ---
 title: "Analysis"
 author: "Sunduss Hamdan and Kaela Girod"
-format: html
+format:
+  html:
+    embed-resources: true
 editor: visual
+editor_options: 
+  chunk_output_type: console
 ---
 
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(tidymodels)
+library(tidyclust)
+library(factoextra)
+library(broom)
+library(sf)
+```
 
 ```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+## Load Data and Prepare Modelling Data
+
+nyc_final <- readRDS("data/nyc_final.rds")
+
+# drop geometry and identifiers before modelling
+nyc_model_data <- nyc_final %>%
+  st_drop_geometry() %>%
+  select(GEOID, NAME,
+         pct_poverty, unemployment_rate, median_income,
+         pct_bachelor, median_rent, median_home_value,
+         pct_renter, vacancy_rate, pct_white, pct_black,
+         pct_hispanic, pct_foreign_born, mean_commute)
+
+# modelling variables only (no identifiers)
+nyc_vars <- nyc_model_data %>%
+  select(-GEOID, -NAME)
+
+# check for highly correlated variables
+cor(nyc_vars)
+```
+
+## Principle Component Analysis (PCA)
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+# normalize and run PCA across all components first
+# so we can inspect variance explained before deciding how many to keep
+pca_rec <- nyc_vars %>%
+  recipe() %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), id = "pca")
+
+pca_rec_fit <- pca_rec %>%
+  prep()
+
+# how much variance does each component explain?
+tidy(pca_rec_fit, id = "pca", type = "variance")
+
+# what does each component capture?
+tidy(pca_rec_fit, id = "pca", type = "coef")
+
+# scree plot — look for the elbow to decide how many components to keep
+tidy(pca_rec_fit, id = "pca", type = "variance") %>%
+  filter(terms == "percent variance") %>%
+  ggplot(aes(x = component, y = value)) +
+  geom_point() +
+  geom_line() +
+  labs(title = "Scree Plot",
+    x = "Principal Component",
+    y = "Percent of Variance Explained") +
+  theme_minimal()
+
+# [EDIT — replace num_comp once you have inspected the scree plot]
+pca_rec_final <- nyc_vars %>%
+  recipe() %>%
+  step_normalize(all_predictors()) %>%
+  step_pca(all_predictors(), num_comp = 5, id = "pca")
 
 ```
 
-
-
+## K-Means Clustering
 ```{r}
+#| echo: false
+#| message: false
+#| warning: false
 
+# set seed because k-means is not deterministic
+set.seed(20200205)
+
+# set up 5-fold cross validation
+nyc_cv <- vfold_cv(nyc_vars, v = 5)
+
+# k-means spec with num_clusters = tune()
+kmeans_spec <- k_means(
+  num_clusters = tune()) %>%
+  set_engine("stats", nstart = 100)
+
+# workflow combining pca recipe and k-means spec
+kmeans_wflow <- workflow(
+  preprocessor = pca_rec_final,
+  spec = kmeans_spec)
+
+# tuning grid considering 1 to 10 clusters
+clust_num_grid <- grid_regular(
+  num_clusters(),
+  levels = 10)
+
+# tune the number of clusters
+res <- tune_cluster(
+  kmeans_wflow,
+  resamples = nyc_cv,
+  grid = clust_num_grid,
+  control = control_grid(save_pred = TRUE, extract = identity),
+  metrics = cluster_metric_set(sse_within_total, silhouette_avg))
+
+# collect metrics
+res_metrics <- res %>%
+  collect_metrics()
+
+# elbow plot
+res_metrics %>%
+  filter(.metric == "sse_within_total") %>%
+  ggplot(aes(x = num_clusters, y = mean)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(x = "Number of clusters", y = "mean WSS over 5 folds") +
+  theme_minimal()
+
+# silhouette plot
+res_metrics %>%
+  filter(.metric == "silhouette_avg") %>%
+  ggplot(aes(x = num_clusters, y = mean)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(x = "Number of clusters", y = "avg silhouette width over 5 folds") +
+  theme_minimal()
+
+# gap statistic
+nyc_vars_scaled <- pca_rec_final %>%
+  prep() %>%
+  bake(new_data = nyc_vars)
+
+fviz_nbclust(nyc_vars_scaled, FUN = kmeans, method = "gap_stat")
+
+# K means final model 
+
+
+# [EDIT — replace num_clusters with chosen K from the plots above]
+kmeans_spec_final <- k_means(
+  num_clusters = 5) %>%
+  set_engine("stats", nstart = 100)
+
+kmeans_wflow_final <- workflow(
+  preprocessor = pca_rec_final,
+  spec = kmeans_spec_final)
+
+set.seed(20200205)
+
+final_fit <- kmeans_wflow_final %>%
+  fit(data = nyc_vars)
+
+# view cluster means
+tidy(final_fit)
+
+# combine results 
+nyc_clusters <- bind_cols(
+  select(nyc_model_data, GEOID, NAME),
+  final_fit %>%
+    extract_recipe() %>%
+    bake(nyc_vars),
+  cluster = final_fit %>%
+    extract_cluster_assignment() %>%
+    pull(.cluster))
 ```
-
