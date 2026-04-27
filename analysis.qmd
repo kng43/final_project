@@ -1,67 +1,162 @@
 ---
 title: "Analysis"
 author: "Sunduss Hamdan and Kaela Girod"
-format:
-  html:
-    embed-resources: true
+format: html
+embed-resources: true
+execute:
+  warning: false
+  message: false
 editor: visual
 editor_options: 
   chunk_output_type: console
 ---
 
 ```{r}
-#| echo: false
-#| message: false
-#| warning: false
-
 library(tidyverse)
 library(tidymodels)
+library(mclust)
 library(tidyclust)
 library(factoextra)
 library(broom)
 library(sf)
+library(h2o)
 ```
 
 ```{r}
-#| echo: false
-#| message: false
-#| warning: false
 
-## Load Data and Prepare Modelling Data
+## Load Data and Prepare Modeling Data
 
-nyc_final <- readRDS("data/nyc_final.rds")
+nyc_final <- st_read("data/nyc_final.shp")
 
-# drop geometry and identifiers before modelling
-nyc_model_data <- nyc_final %>%
-  st_drop_geometry() %>%
-  select(GEOID, NAME,
-         pct_poverty, unemployment_rate, median_income,
-         pct_bachelor, median_rent, median_home_value,
-         pct_renter, vacancy_rate, pct_white, pct_black,
-         pct_hispanic, pct_foreign_born, mean_commute)
+# [I think we need to do some exploratory data analysis, here and in the writeup]
+# [since it's part of our analysis process]
 
-# modelling variables only (no identifiers)
-nyc_vars <- nyc_model_data %>%
-  select(-GEOID, -NAME)
+# drop geometry before modeling
+nyc_data <- nyc_final |>
+  st_drop_geometry()
 
-# check for highly correlated variables
-cor(nyc_vars)
+# check for highly correlated predictors [do not assign this to anything]
+# [i've added a recipe step that removes the ID vars for PCA but we need them to
+# identify tracts at the end]
+# [also need to figure out the best way to format this table if we use it]
+nyc_data |>
+  select(-GEOID, -NAME, -contyfp) |>
+  cor(use = "complete.obs") |>
+  round(2)
+
+sum(!complete.cases(nyc_data))
 ```
+
+## Generalized Low Rank Modeling (GLRM)
+```{r}
+h2o.no_progress()  # turn off progress bars
+h2o.init(max_mem_size = "5g")  # connect to H2O instance
+
+# convert data to h2o object
+my_basket.h2o <- as.h2o(my_basket)
+
+# run basic GLRM
+basic_glrm <- h2o.glrm(
+  training_frame = my_basket.h2o,
+  k = 20, 
+  loss = "Quadratic",
+  regularization_x = "None", 
+  regularization_y = "None", 
+  transform = "STANDARDIZE", 
+  max_iterations = 2000,
+  seed = 123
+)
+
+# get top level summary information on our model
+summary(basic_glrm)
+
+plot(basic_glrm)
+
+# amount of variance explained by each archetype (aka "pc")
+basic_glrm@model$importance
+
+data.frame(
+    PC  = basic_glrm@model$importance %>% seq_along(),
+    PVE = basic_glrm@model$importance %>% .[2,] %>% unlist(),
+    CVE = basic_glrm@model$importance %>% .[3,] %>% unlist()
+) %>%
+    gather(metric, variance_explained, -PC) %>%
+    ggplot(aes(PC, variance_explained)) +
+    geom_point() +
+    facet_wrap(~ metric, ncol = 1, scales = "free")
+
+t(basic_glrm@model$archetypes)[1:5, 1:5]
+
+
+p1 <- t(basic_glrm@model$archetypes) %>% 
+  as.data.frame() %>% 
+  mutate(feature = row.names(.)) %>%
+  ggplot(aes(Arch1, reorder(feature, Arch1))) +
+  geom_point()
+
+p2 <- t(basic_glrm@model$archetypes) %>% 
+  as.data.frame() %>% 
+  mutate(feature = row.names(.)) %>%
+  ggplot(aes(Arch1, Arch2, label = feature)) +
+  geom_text()
+
+gridExtra::grid.arrange(p1, p2, nrow = 1)
+
+
+# Re-run model with k = 8
+k8_glrm <- h2o.glrm(
+  training_frame = my_basket.h2o,
+  k = 8, 
+  loss = "Quadratic",
+  regularization_x = "None", 
+  regularization_y = "None", 
+  transform = "STANDARDIZE", 
+  max_iterations = 2000,
+  seed = 123
+)
+
+# Reconstruct to see how well the model did
+my_reconstruction <- h2o.reconstruct(k8_glrm, my_basket.h2o, reverse_transform = TRUE)
+
+# Raw predicted values
+my_reconstruction[1:5, 1:5]
+
+# Round values to whole integers
+my_reconstruction[1:5, 1:5] %>% round(0)
+
+```
+
+## Gaussian Mixture Modeling (GMM)
+```{r}
+library(mclust)
+
+gmm_fit <- Mclust(glrm_repr)
+
+clusters <- gmm_fit$classification
+
+glrm_results <- nyc_data |>
+  sf::st_drop_geometry() |>
+  dplyr::select(GEOID) |>
+```
+
 
 ## Principle Component Analysis (PCA)
 ```{r}
-#| echo: false
-#| message: false
-#| warning: false
 
 # normalize and run PCA across all components first
 # so we can inspect variance explained before deciding how many to keep
-pca_rec <- nyc_vars %>%
-  recipe() %>%
-  step_normalize(all_predictors()) %>%
+# [might want to dummy out the county variable, since it's only 5 counties and 
+# we might want to keep some census tracts together based on their county]
+pca_rec <- nyc_data |>
+  recipe() |>
+  add_role(GEOID, NAME, contyfp, new_role = "id") |>
+  step_rm(has_role("id")) |>
+  step_indicate_na(all_predictors) |>
+  step_impute_mean(all_predictors) |>
+  step_normalize(all_predictors()) |>
   step_pca(all_predictors(), id = "pca")
 
-pca_rec_fit <- pca_rec %>%
+pca_rec_fit <- pca_rec |>
   prep()
 
 # how much variance does each component explain?
@@ -71,8 +166,8 @@ tidy(pca_rec_fit, id = "pca", type = "variance")
 tidy(pca_rec_fit, id = "pca", type = "coef")
 
 # scree plot — look for the elbow to decide how many components to keep
-tidy(pca_rec_fit, id = "pca", type = "variance") %>%
-  filter(terms == "percent variance") %>%
+tidy(pca_rec_fit, id = "pca", type = "variance") |>
+  filter(terms == "percent variance") |>
   ggplot(aes(x = component, y = value)) +
   geom_point() +
   geom_line() +
@@ -82,18 +177,15 @@ tidy(pca_rec_fit, id = "pca", type = "variance") %>%
   theme_minimal()
 
 # [EDIT — replace num_comp once you have inspected the scree plot]
-pca_rec_final <- nyc_vars %>%
-  recipe() %>%
-  step_normalize(all_predictors()) %>%
+pca_rec_final <- nyc_vars |>
+  recipe() |>
+  step_normalize(all_predictors()) |>
   step_pca(all_predictors(), num_comp = 5, id = "pca")
 
 ```
 
 ## K-Means Clustering
 ```{r}
-#| echo: false
-#| message: false
-#| warning: false
 
 # set seed because k-means is not deterministic
 set.seed(20200205)
@@ -103,7 +195,7 @@ nyc_cv <- vfold_cv(nyc_vars, v = 5)
 
 # k-means spec with num_clusters = tune()
 kmeans_spec <- k_means(
-  num_clusters = tune()) %>%
+  num_clusters = tune()) |>
   set_engine("stats", nstart = 100)
 
 # workflow combining pca recipe and k-means spec
@@ -125,12 +217,12 @@ res <- tune_cluster(
   metrics = cluster_metric_set(sse_within_total, silhouette_avg))
 
 # collect metrics
-res_metrics <- res %>%
+res_metrics <- res |>
   collect_metrics()
 
 # elbow plot
-res_metrics %>%
-  filter(.metric == "sse_within_total") %>%
+res_metrics |>
+  filter(.metric == "sse_within_total") |>
   ggplot(aes(x = num_clusters, y = mean)) +
   geom_point() +
   geom_line() +
@@ -140,7 +232,7 @@ res_metrics %>%
 
 # silhouette plot
 res_metrics %>%
-  filter(.metric == "silhouette_avg") %>%
+  filter(.metric == "silhouette_avg") |>
   ggplot(aes(x = num_clusters, y = mean)) +
   geom_point() +
   geom_line() +
@@ -149,8 +241,8 @@ res_metrics %>%
   theme_minimal()
 
 # gap statistic
-nyc_vars_scaled <- pca_rec_final %>%
-  prep() %>%
+nyc_vars_scaled <- pca_rec_final |>
+  prep() |>
   bake(new_data = nyc_vars)
 
 fviz_nbclust(nyc_vars_scaled, FUN = kmeans, method = "gap_stat")
@@ -160,7 +252,7 @@ fviz_nbclust(nyc_vars_scaled, FUN = kmeans, method = "gap_stat")
 
 # [EDIT — replace num_clusters with chosen K from the plots above]
 kmeans_spec_final <- k_means(
-  num_clusters = 5) %>%
+  num_clusters = 5) |>
   set_engine("stats", nstart = 100)
 
 kmeans_wflow_final <- workflow(
@@ -169,7 +261,7 @@ kmeans_wflow_final <- workflow(
 
 set.seed(20200205)
 
-final_fit <- kmeans_wflow_final %>%
+final_fit <- kmeans_wflow_final |>
   fit(data = nyc_vars)
 
 # view cluster means
@@ -178,10 +270,10 @@ tidy(final_fit)
 # combine results 
 nyc_clusters <- bind_cols(
   select(nyc_model_data, GEOID, NAME),
-  final_fit %>%
-    extract_recipe() %>%
+  final_fit |>
+    extract_recipe() |>
     bake(nyc_vars),
-  cluster = final_fit %>%
-    extract_cluster_assignment() %>%
+  cluster = final_fit |>
+    extract_cluster_assignment() |>
     pull(.cluster))
 ```

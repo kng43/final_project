@@ -1,9 +1,11 @@
 ---
 title: "Final Project - Classifying New York Census Tracts"
 author: "Sunduss Hamdan and Kaela Girod"
-format:
-  html:
-    embed-resources: true
+format: html
+embed-resources: true
+execute:
+  warning: false
+  message: false
 editor: visual
 editor_options: 
   chunk_output_type: console
@@ -22,11 +24,7 @@ another. A neighborhood with a high poverty rate but stable housing, good transi
 and strong employment access is a very different place from one with the same 
 poverty rate but high vacancy, poor connectivity, and limited opportunity. Treating 
 them the same way leads to poorly targeted policies. This project takes a different 
-approach: we use data-driven methods, specifically using three models 
-(Principle Component Analysis, K-means clustering, and Gaussian Mixture Modeling) to identify distinct neighborhood typologies 
-across New York City's census tracts, asking what distinct socioeconomic typologies 
-exist across NYC census tracts, and what combinations of demographic and economic 
-characteristics define them.
+approach: we use data-driven methods, specifically using two dimension reduction techniques (Generalized Low Rand Models and Principle Component Analysis) along with two clustering techniques (Gaussian Mixture Modeling and K-Means Clustering) to identify distinct neighborhood typologies across New York City's census tracts, asking what combinations of demographic and economic characteristics define them.
 
 ## 2. Background, Policy Relevance, and Literature
 New York City's inequality is well documented. The top three percent of wage earners 
@@ -63,12 +61,12 @@ potential to improve how investments are targeted.
 
 ```{r}
 #| echo: false
-#| message: false
-#| warning: false
+
+library(tidyverse)
 ### MAYBE INCLUDE SOME EXPLORATORY AND EXPLANATORY ANALYSIS VISUALS OF KEY VARIABLES OR DESCRIPTIVE STATS ON NEW YORK - SUNDUSS CAN DO THIS ONCE THE DATASET IS UP AND RUNNING 
 ```
 
-## 3. Data and Variable Selection - EDIT THE BELOW ONCE WE ADD ADDITIONAL VARIABLES TO THE DATASET E.G., SHOOTINGS 
+## 3. Data and Variable Selection - EDIT TO VERIFY ACCURACY
 Our primary dataset comes from the 2020–2024 American Community Survey (ACS) 
 5-year estimates, which we access via the Census Bureau API at the census tract 
 level across all five boroughs of New York City. The ACS 5-year estimates pool 
@@ -89,23 +87,14 @@ dividing total travel time (B08013) by the number of workers aged 16 and over wh
 commute outside the home (B08012), which is consistent with the Census Bureau's 
 own approach to computing this measure.
 
-We considered but decided to exclude two variables. First, the Gini coefficient (B19083), 
-which measures income inequality within a tract, was dropped because it captures 
-information already covered by our combination of median income and poverty rate. 
-Second, age structure variables (B01001) were excluded because including multiple 
-age-by-sex breakdown columns would add complexity without adding interpretive value; 
-educational attainment serves as a cleaner proxy for the working-age population. 
-Both decisions follow a simple guiding principle: where two variables tell 
-essentially the same story, we keep the one that is easier to interpret in a 
-policy context. [EXPLAIN WHY WE DIDN'T CHOOSE THE ARRESTS VARIABLE AND USED 
-SHOOTINGS INSTEAD]
+We considered but decided to exclude two variables. First, the Gini coefficient (B19083), which measures income inequality within a tract, was dropped because it captures information already covered by our combination of median income and poverty rate. Second, age structure variables (B01001) were excluded because including multiple age-by-sex breakdown columns would add complexity without adding interpretive value; educational attainment serves as a cleaner proxy for the working-age population. Both decisions follow a simple guiding principle: where two variables tell essentially the same story, we keep the one that is easier to interpret in a policy context. 
+
+We also wanted to consider a variable related to neighborhood safety as represented by crime. Ideally, we would have liked to use a crime rate by census tract variable. However, since that was not available, we decided to use NYPD Arrests data from the NYC Open Data Portal to calculate arrest rates by census tract. We used arrests instead of shootings because arrests also captures information on non-gun related violence and crimes, which may also contribute to the perception of safety in a neighborhood. To match arrests to census tracts, we also used the 2020 Census Centers of Population and identified arrests based on their proximity to the population center of the tract. We did this method as opposed to joining based on polygon geometry to more accurately capture the population's experience of crime, which is not strictly limited by census tract borders.
 
 In addition to our primary 2020–2024 dataset, we also extract the 2018–2022 ACS 
 5-year estimates for the same tracts. This allows us to compute four supplementary 
 change variables in median income, median rent, poverty rate, and unemployment 
-rate, that measure how conditions shifted between the two periods. These change 
-variables are not used as inputs to our clustering models; instead, they are used 
-afterwards to help describe and validate the typologies we identify. One limitation 
+rate, that measure how conditions shifted between the two periods. One limitation 
 worth noting is that because both ACS vintages include data collected between 2020 
 and 2022, they share three overlapping years of data. This means the change 
 variables capture a narrower window of genuine change than the four-year gap between 
@@ -113,67 +102,116 @@ the vintage endpoints might suggest. This is a structural feature of ACS 5-year
 estimates rather than a choice we made, and we flag it as a limitation of our 
 approach.
 
-Our [EDIT WITH OUR ACTUAL NO. OF VARIABLES] modelling variables are used as inputs 
-to our dimensionality reduction and clustering models. Census tracts with missing values 
-on any modelling variable are excluded from the analysis. Missing data arise most 
-commonly in tracts that are entirely renter-occupied, which have no median home 
-value, and in tracts with very few commuters, which have no reliable commute time 
-estimate.
+Our 18 modeling variables are used as inputs to our dimensionality reduction and clustering models. Census tracts with missing values on any modelling variable are excluded from the analysis (why? I don't think we need to do that, let the method do it. We can also impute median for variables with not too many missing). Missing data arise most commonly in tracts that are entirely renter-occupied, which have no median home value, and in tracts with very few commuters, which have no reliable commute time estimate. The list of variables is included in @tbl-variables below.
+
 
 ```{r}
 #| label: tbl-variables
 #| tbl-cap: "Variable Selection and Justification"
 #| echo: false
-#| message: false
-#| warning: false
 
-library(tidyverse)
-library(kableExtra)
+Dimension <- c("Economic", "Economic", "Economic", "Education", "Housing", "Housing", "Housing", "Housing", "Race/Ethnicity", "Race/Ethnicity", "Race/Ethnicity", "Race/Ethnicity", "Mobility", "Crime", "Change", "Change", "Change", "Change")
+Variable <- c("Poverty rate", "Unemployment rate", "Median household income", "Bachelor's degree share", "Median gross rent", "Median home value", "Renter-occupied share", "Vacancy rate", "Share White", "Share Black", "Share Hispanic", "Share foreign-born", "Mean commute time", "Arrests per 1,000 residents", "Change in median income", "Change in median rent", "Change in poverty rate", "Change in unemployment")
+Construction <- c("100*Pop. below poverty line / poverty universe total", "100*Unemployed civilians / civilian labor force", "Level (dollars)", "100*Bachelor's holders / pop. 25+", "Level (dollars)", "Level (dollars)",  "100*Renter units / total occupied units", "100*Vacant units / total housing units", "100*White alone / total population", "100*Black alone / total population", "100*Hispanic or Latino / total population", "100*Foreign-born / total population", "Aggregate travel time / commuting workers 16+", "1000*Total arrests/total population", "% change, 2022-2024 vintages", "% change, 2022-2024 vintages", "Percentage point change", "Percentage point change")
+Justification <- c("Core deprivation indicator; directly named in proposal", "Captures labor market exclusion distinct from income poverty", "Primary measure of economic resources; retained as level as it is already comparable across tracts", "Captures human capital; strongly associated with neighborhood economic trajectory", "Directly named in proposal; key measure of housing cost", "Complements rent; distinguishes owner- vs. renter-dominated neighborhoods", "Tenure structure is a fundamental dimension of NYC neighborhood type", "Indicator of disinvestment; key differentiator between declining and stable neighborhoods", "Captures racial composition; connected to NYC's documented racial wealth gap", "As above", "As above, captures ethnicity composition", "NYC's immigrant geography is a major structural driver of neighborhood type", "Directly named in proposal; proxy for transit access and economic integration", "Captures information on neighborhood safety", "Captures change over time", "As above", "As above, percentage point change is appropriate for rates", "As above")
 
-variable_table <- tribble(
-  ~Dimension,        ~Variable,                  ~Construction,                                          ~Justification,
-  "Economic",        "Poverty rate",              "Pop. below poverty line / poverty universe total",     "Core deprivation indicator; directly named in proposal",
-  "Economic",        "Unemployment rate",         "Unemployed civilians / civilian labor force",          "Captures labor market exclusion distinct from income poverty",
-  "Economic",        "Median household income",   "Level (dollars)",                                      "Primary measure of economic resources; retained as level as it is already comparable across tracts",
-  "Education",       "Bachelor's degree share",   "Bachelor's holders / pop. 25+",                       "Captures human capital; strongly associated with neighborhood economic trajectory",
-  "Housing",         "Median gross rent",         "Level (dollars)",                                      "Directly named in proposal; key measure of housing cost burden",
-  "Housing",         "Median home value",         "Level (dollars)",                                      "Complements rent; distinguishes owner- vs. renter-dominated neighborhoods",
-  "Housing",         "Renter-occupied share",     "Renter units / total occupied units",                  "Tenure structure is a fundamental dimension of NYC neighborhood type",
-  "Housing",         "Vacancy rate",              "Vacant units / total housing units",                   "Indicator of disinvestment; key differentiator between declining and stable neighborhoods",
-  "Race/Ethnicity",  "Share White",               "White alone / total population",                       "Captures racial composition; connected to NYC's documented racial wealth gap",
-  "Race/Ethnicity",  "Share Black",               "Black alone / total population",                       "As above",
-  "Race/Ethnicity",  "Share Hispanic",            "Hispanic or Latino / total population (B03003)",       "Uses B03003 rather than B02001 as Hispanic identity is an ethnicity not captured by race alone",
-  "Race/Ethnicity",  "Share foreign-born",        "Foreign-born / total population",                      "NYC's immigrant geography is a major structural driver of neighborhood type",
-  "Mobility",        "Mean commute time",         "Aggregate travel time / commuting workers 16+",        "Directly named in proposal; proxy for transit access and economic integration",
-  "Supplementary",   "Change in median income",   "% change, 2022-2024 vintages",                         "Post-hoc cluster validation only; not a modelling input",
-  "Supplementary",   "Change in median rent",     "% change, 2022-2024 vintages",                         "As above",
-  "Supplementary",   "Change in poverty rate",    "Percentage point change",                              "As above; percentage point change is appropriate for rates",
-  "Supplementary",   "Change in unemployment",    "Percentage point change",                              "As above")
+variable_table <- tibble(Dimension, Variable, Construction, Justification)
 
-variable_table |>
-  kbl(
-    col.names = c("Dimension", "Variable", "Construction", "Justification"),
-    align = c("l", "l", "l", "l")) |>
-   kable_styling(
-    bootstrap_options = c("striped", "hover", "condensed"),
-    full_width = TRUE,
-    font_size = 13) |>
-  column_spec(1, bold = TRUE, width = "10em") |>
-  column_spec(2, width = "12em") |>
-  column_spec(3, width = "14em") |>
-  column_spec(4, width = "20em") |>
-  row_spec(0, bold = TRUE, background = "#2c3e50", color = "white") |>
-  pack_rows("Modelling Variables", 1, 13) |>
-  pack_rows("Supplementary Variables — Used After Clustering To Validate Typologies, Not As Modelling Inputs", 14, 17)
+knitr::kable(variable_table)
+
+```
+
+
+
+```{r}
+#| echo: false
+#library(kableExtra)
+
+#variable_table <- tribble(
+#  ~Dimension,        ~Variable,                  ~Construction,                                          ~Justification,
+#  "Economic",        "Poverty rate",              "Pop. below poverty line / poverty universe total",     "Core deprivation indicator; directly named in proposal",
+  
+#  "Economic",        "Unemployment rate",         "Unemployed civilians / civilian labor force",          "Captures labor market exclusion distinct from income poverty",
+  
+#  "Economic",        "Median household income",   "Level (dollars)",                                      "Primary measure of economic resources; retained as level as it is already comparable across tracts",
+#  "Education",       "Bachelor's degree share",   "Bachelor's holders / pop. 25+",                       "Captures human capital; strongly associated with neighborhood # economic trajectory",
+#  "Housing",         "Median gross rent",         "Level (dollars)",                                      "Directly named in proposal; key measure of housing cost burden",
+#  "Housing",         "Median home value",         "Level (dollars)",                                      "Complements rent; distinguishes owner- vs. renter-dominated neighborhoods",
+#  "Housing",         "Renter-occupied share",     "Renter units / total occupied units",                  "Tenure structure is a fundamental dimension of NYC neighborhood type",
+#  "Housing",         "Vacancy rate",              "Vacant units / total housing units",                   "Indicator of disinvestment; key differentiator between declining and stable neighborhoods",
+#  "Race/Ethnicity",  "Share White",               "White alone / total population",                       "Captures racial composition; connected to NYC's documented racial wealth gap",
+#  "Race/Ethnicity",  "Share Black",               "Black alone / total population",                       "As above",
+#  "Race/Ethnicity",  "Share Hispanic",            "Hispanic or Latino / total population (B03003)",       "Uses B03003 rather than B02001 as Hispanic identity is an ethnicity not captured by race alone",
+#  "Race/Ethnicity",  "Share foreign-born",        "Foreign-born / total population",                      "NYC's immigrant geography is a major structural driver of neighborhood type",
+#  "Mobility",        "Mean commute time",         "Aggregate travel time / commuting workers 16+",        "Directly named in proposal; proxy for transit access and economic integration",
+#  "Supplementary",   "Change in median income",   "% change, 2022-2024 vintages",                         "Post-hoc cluster validation only; not a modelling input",
+#  "Supplementary",   "Change in median rent",     "% change, 2022-2024 vintages",                         "As above",
+#  "Supplementary",   "Change in poverty rate",    "Percentage point change",                              "As above; percentage point change is appropriate for rates",
+#  "Supplementary",   "Change in unemployment",    "Percentage point change",                              "As above")
+
+#variable_table |>
+#  kbl(
+#    col.names = c("Dimension", "Variable", "Construction", "Justification"),
+#    align = c("l", "l", "l", "l")) |>
+#   kable_styling(
+#    bootstrap_options = c("striped", "hover", "condensed"),
+#    full_width = TRUE,
+#    font_size = 13) |>
+#  column_spec(1, bold = TRUE, width = "10em") |>
+#  column_spec(2, width = "12em") |>
+#  column_spec(3, width = "14em") |>
+#  column_spec(4, width = "20em") |>
+#  row_spec(0, bold = TRUE, background = "#2c3e50", color = "white") |>
+#  pack_rows("Modelling Variables", 1, 13) |>
+#  pack_rows("Supplementary Variables — Used After Clustering To Validate Typologies, # Not As Modelling Inputs", 14, 17)
 ```
 
 ## 4. Methodology
-Our analysis uses three methods in sequence: Principal Component Analysis (PCA) 
-to reduce the complexity of our data, K-means clustering to identify an initial 
-set of neighborhood groups, and Gaussian Mixture Modeling (GMM) to produce a 
-more statistically rigorous final classification. Each step is described below.
+Our analysis compares two methods of clustering census tracts. The first method uses Generalized Low Rank Models (GLRM) to reduce the complexity of our data, followed by Gaussian Mixture Modeling (GMM) for clustering neighborhood groups. The second method is simpler, using Principal Component Analysis (PCA) for dimension reduction and K-means clustering to compare for the final classification. Each step is described below.
 
-### 4.1. Step 1: Dimensionality Reduction with PCA
+### Method 1
+
+#### 4.1 Dimension Reduction with Generalized Low Rank Modeling
+
+
+
+#### 4.2 Clustering with Gaussian Mixture Modeling
+
+Our primary clustering method is Gaussian Mixture Modeling (GMM), 
+implemented using `library(mclust)`.
+
+Instead of measuring the distance from each tract to a centroid, GMM 
+models each cluster as a multivariate normal distribution, meaning each cluster 
+has its own center and its own shape, capturing the spread and correlation 
+structure of the tracts within it. Tracts that are close to the center of a 
+cluster's distribution are more likely to belong to it; tracts far from the 
+center are less likely.
+
+GMM also produces soft assignments rather than hard ones. Rather than 
+assigning each tract definitively to a single cluster, GMM estimates the 
+probability that each tract belongs to each cluster. These probabilities (called 
+responsibilities) sum to one for each tract. A tract with a responsibility of 
+0.95 for cluster 3 belongs there with high confidence; a tract with 
+responsibilities of 0.52 and 0.48 across two clusters is genuinely ambiguous, 
+and GMM makes that uncertainty visible rather than hiding it.
+
+To select the number of clusters, we use the Bayesian Information Criterion 
+(BIC). BIC works by balancing model fit against model complexity. A model with 
+more clusters will always fit the data better, but BIC penalizes the additional 
+parameters required, steering us toward solutions that are as simple as possible 
+while still capturing meaningful structure in the data. In `library(mclust)`, 
+the function automatically tries between 1 and 9 clusters across 14 different 
+variance model specifications, and we select the model with the highest BIC 
+value reported by the package. One small technical note: the standard statistical 
+definition of BIC says lower values are better, but the library(mclust) package 
+displays BIC with the opposite sign, meaning we look for the highest value on its 
+output plots. Nevertheless, the end result is the same; we are still selecting the model that best balances fit and simplicity.
+
+We do not automatically accept the number of clusters that scores best on BIC. If the statistically preferred solution produces neighborhood types that are too similar to one another to be meaningfully different in a policy context, we will consider a solution with fewer clusters and explain our reasoning for doing so.
+
+### Method 2
+
+#### 4.3 Dimension Reduction with PCA
 We begin with [INSERT NO. OF FINAL VARIABLES] variables across five thematic dimensions. Many of these 
 variables are likely to be correlated with one another. For example, poverty 
 rate and unemployment rate tend to move together, as do median income and 
@@ -198,10 +236,9 @@ retain enough components to explain at least 80% [THIS WILL NEED TO BE CHANGED W
 data, following standard practice. The retained components are then passed 
 forward as inputs to the clustering stage.
 
-### 4.2. Step 2: K-Means Clustering
+#### 4.4 K-Means Clustering
 
-We use K-means clustering as our first clustering step. K-means works by 
-grouping census tracts into a fixed number of clusters, where each tract is 
+We use K-means clustering as our clustering step with this simpler method. K-means works by grouping census tracts into a fixed number of clusters, where each tract is 
 assigned to the cluster whose center (called the centroid) it is closest to. 
 
 The algorithm works as follows:
@@ -232,50 +269,13 @@ exactly one cluster with no measure of uncertainty; a tract that sits on the
 boundary between two neighborhood types is treated the same as one that sits 
 squarely in the middle of a cluster. Second, as Milechin et al. (2024) found in 
 a closely related study, the statistically optimal number of clusters and the 
-most interpretable number are not always the same. We therefore treat K-means 
-as an exploratory step and use its results to inform, but not determine, our 
-final model.
-
-### 4.3. Step 3: Gaussian Mixture Modeling
-
-Our final and primary clustering method is Gaussian Mixture Modeling (GMM), 
-implemented using `library(mclust)`. GMM extends the logic of K-means in two 
-important ways that make it better suited to our goals.
-
-First, instead of measuring the distance from each tract to a centroid, GMM 
-models each cluster as a multivariate normal distribution, meaning each cluster 
-has its own center and its own shape, capturing the spread and correlation 
-structure of the tracts within it. Tracts that are close to the center of a 
-cluster's distribution are more likely to belong to it; tracts far from the 
-center are less likely.
-
-Second, GMM produces soft assignments rather than hard ones. Rather than 
-assigning each tract definitively to a single cluster, GMM estimates the 
-probability that each tract belongs to each cluster. These probabilities (called 
-responsibilities) sum to one for each tract. A tract with a responsibility of 
-0.95 for cluster 3 belongs there with high confidence; a tract with 
-responsibilities of 0.52 and 0.48 across two clusters is genuinely ambiguous, 
-and GMM makes that uncertainty visible rather than hiding it.
-
-To select the number of clusters, we use the Bayesian Information Criterion 
-(BIC). BIC works by balancing model fit against model complexity. A model with 
-more clusters will always fit the data better, but BIC penalizes the additional 
-parameters required, steering us toward solutions that are as simple as possible 
-while still capturing meaningful structure in the data. In `library(mclust)`, 
-the function automatically tries between 1 and 9 clusters across 14 different 
-variance model specifications, and we select the model with the highest BIC 
-value reported by the package. One small technical note: the standard statistical 
-definition of BIC says lower values are better, but the library(mclust) package 
-displays BIC with the opposite sign, meaning we look for the highest value on its 
-output plots. Nevertheless, the end result is the same; we are still selecting the model that best balances fit and simplicity.
-As with K-means, we do not automatically accept the number of clusters that scores best on BIC. If the statistically preferred solution produces neighborhood types that are too similar to one another to be meaningfully different in a policy context, we will consider a solution with fewer clusters and explain our reasoning for doing so.
+most interpretable number are not always the same. As with GMM, we do not automatically accept the statistically optimal number of clusters.
 
 ## 5. Results
 
 ```{r}
 #| echo: false
-#| message: false
-#| warning: false
+
 ### INCLUDE VISUALS HERE
 ```
 
@@ -283,8 +283,7 @@ As with K-means, we do not automatically accept the number of clusters that scor
 
 ```{r}
 #| echo: false
-#| message: false
-#| warning: false
+
 ### INCLUDE VISUALS HERE
 ```
 
