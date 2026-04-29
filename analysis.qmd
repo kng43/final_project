@@ -142,66 +142,60 @@ glrm_results <- nyc_data |>
 
 ## Principle Component Analysis (PCA)
 ```{r}
+# select only the modelling variables, dropping ID columns
+nyc_vars <- nyc_data |>
+  select(-GEOID, -NAME, -contyfp) |>
+  mutate(across(everything(), as.numeric))
 
-# normalize and run PCA across all components first
-# so we can inspect variance explained before deciding how many to keep
-# [might want to dummy out the county variable, since it's only 5 counties and 
-# we might want to keep some census tracts together based on their county]
-pca_rec <- nyc_data |>
-  recipe() |>
-  add_role(GEOID, NAME, contyfp, new_role = "id") |>
-  step_rm(has_role("id")) |>
-  step_indicate_na(all_predictors) |>
-  step_impute_mean(all_predictors) |>
-  step_normalize(all_predictors()) |>
-  step_pca(all_predictors(), id = "pca")
+# impute missing values and replace infinite values with column means
+nyc_vars_imputed <- nyc_vars |>
+  mutate(across(everything(), ~ ifelse(is.infinite(.), NA, .))) |>
+  mutate(across(everything(), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) |>
+  as.data.frame()
 
-pca_rec_fit <- pca_rec |>
-  prep()
+# remove any columns with zero variance
+nyc_vars_imputed <- nyc_vars_imputed[, apply(nyc_vars_imputed, 2, sd) > 0]
 
-# how much variance does each component explain?
-tidy(pca_rec_fit, id = "pca", type = "variance")
+# run PCA
+pca_fit <- prcomp(nyc_vars_imputed, scale. = TRUE, center = TRUE)
 
-# what does each component capture?
-tidy(pca_rec_fit, id = "pca", type = "coef")
+# check cumulative variance explained
+summary(pca_fit)
 
-# scree plot — look for the elbow to decide how many components to keep
-tidy(pca_rec_fit, id = "pca", type = "variance") |>
-  filter(terms == "percent variance") |>
-  ggplot(aes(x = component, y = value)) +
+# scree plot
+data.frame(
+  component = 1:length(pca_fit$sdev),
+  variance = (pca_fit$sdev^2 / sum(pca_fit$sdev^2)) * 100) |>
+  ggplot(aes(x = component, y = variance)) +
   geom_point() +
   geom_line() +
-  labs(title = "Scree Plot",
+  labs(
+    title = "Figure 2. Scree Plot - Variance Explained by Each Principal Component",
+    subtitle = "The elbow around component 5 indicates diminishing returns. Nine components are retained to explain 80.2% of total variance.",
     x = "Principal Component",
     y = "Percent of Variance Explained") +
   theme_minimal()
 
-# [EDIT — replace num_comp once you have inspected the scree plot]
-pca_rec_final <- nyc_vars |>
-  recipe() |>
-  step_normalize(all_predictors()) |>
-  step_pca(all_predictors(), num_comp = 5, id = "pca")
-
+# extract 9 components
+pca_scores <- as.data.frame(pca_fit$x[, 1:9])
 ```
 
 ## K-Means Clustering
 ```{r}
-
-# set seed because k-means is not deterministic
 set.seed(20200205)
 
 # set up 5-fold cross validation
-nyc_cv <- vfold_cv(nyc_vars, v = 5)
+nyc_cv <- vfold_cv(pca_scores, v = 5)
 
 # k-means spec with num_clusters = tune()
 kmeans_spec <- k_means(
   num_clusters = tune()) |>
   set_engine("stats", nstart = 100)
 
-# workflow combining pca recipe and k-means spec
-kmeans_wflow <- workflow(
-  preprocessor = pca_rec_final,
-  spec = kmeans_spec)
+# workflow
+kmeans_wflow <- workflow() |>
+  add_variables(outcomes = c(), predictors = everything()) |>
+  add_model(kmeans_spec)
 
 # tuning grid considering 1 to 10 clusters
 clust_num_grid <- grid_regular(
@@ -227,53 +221,40 @@ res_metrics |>
   geom_point() +
   geom_line() +
   scale_x_continuous(breaks = 1:10) +
-  labs(x = "Number of clusters", y = "mean WSS over 5 folds") +
+  labs(
+    title = "Elbow Plot",
+    x = "Number of Clusters",
+    y = "Mean WSS over 5 Folds") +
   theme_minimal()
 
 # silhouette plot
-res_metrics %>%
+res_metrics |>
   filter(.metric == "silhouette_avg") |>
   ggplot(aes(x = num_clusters, y = mean)) +
   geom_point() +
   geom_line() +
   scale_x_continuous(breaks = 1:10) +
-  labs(x = "Number of clusters", y = "avg silhouette width over 5 folds") +
+  labs(
+    title = "Silhouette Plot",
+    x = "Number of Clusters",
+    y = "Avg Silhouette Width over 5 Folds") +
   theme_minimal()
 
-# gap statistic
-nyc_vars_scaled <- pca_rec_final |>
-  prep() |>
-  bake(new_data = nyc_vars)
-
-fviz_nbclust(nyc_vars_scaled, FUN = kmeans, method = "gap_stat")
-
-# K means final model 
-
-
-# [EDIT — replace num_clusters with chosen K from the plots above]
-kmeans_spec_final <- k_means(
-  num_clusters = 5) |>
-  set_engine("stats", nstart = 100)
-
-kmeans_wflow_final <- workflow(
-  preprocessor = pca_rec_final,
-  spec = kmeans_spec_final)
-
+# K means final model - 5 clusters chosen based on elbow and silhouette plots
 set.seed(20200205)
 
-final_fit <- kmeans_wflow_final |>
-  fit(data = nyc_vars)
+final_fit <- kmeans(pca_scores, centers = 5, nstart = 100)
 
-# view cluster means
-tidy(final_fit)
+# view cluster sizes
+table(final_fit$cluster)
 
-# combine results 
-nyc_clusters <- bind_cols(
-  select(nyc_model_data, GEOID, NAME),
-  final_fit |>
-    extract_recipe() |>
-    bake(nyc_vars),
-  cluster = final_fit |>
-    extract_cluster_assignment() |>
-    pull(.cluster))
+# combine results - add cluster assignments back to original data
+nyc_clusters <- nyc_data |>
+  mutate(cluster = final_fit$cluster)
+
+# view cluster means on key variables
+nyc_clusters |>
+  group_by(cluster) |>
+  summarise(across(c(pct_pvr, mdn_ncm, pct_bch, mdn_rnt, pct_wht, pct_blc, pct_hsp),
+                   \(x) mean(x, na.rm = TRUE)))
 ```
