@@ -174,3 +174,10 @@ st_write(nyc_final, "data/nyc_final.shp")
 #          pct_hispanic, pct_foreign_born, mean_commute)
 #saveRDS(nyc_final, "data/nyc_final.rds")
 
+third_place <- read.csv("data/third_place_index_1.0.csv")
+
+nyc_tracts <- nyc_2022$GEOID
+
+third_place_nyc <- third_place |>
+  filter(geoid %in% nyc_tracts) |>
+  select()

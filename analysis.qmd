@@ -39,8 +39,13 @@ nyc_data <- nyc_final |>
 # [i've added a recipe step that removes the ID vars for PCA but we need them to
 # identify tracts at the end]
 # [also need to figure out the best way to format this table if we use it]
-nyc_data |>
-  select(-GEOID, -NAME, -contyfp) |>
+nyc_model <- nyc_data |>
+  select(-GEOID, -NAME, -contyfp)
+
+nyc_ids <- nyc_data |>
+  select(GEOID, NAME, contyfp)
+
+nyc_model |>
   cor(use = "complete.obs") |>
   round(2)
 
@@ -49,23 +54,26 @@ sum(!complete.cases(nyc_data))
 
 ## Generalized Low Rank Modeling (GLRM)
 ```{r}
+
 h2o.no_progress()  # turn off progress bars
 h2o.init(max_mem_size = "5g")  # connect to H2O instance
 
 # convert data to h2o object
-my_basket.h2o <- as.h2o(my_basket)
+nyc_model.h2o <- as.h2o(nyc_model)
 
 # run basic GLRM
 basic_glrm <- h2o.glrm(
-  training_frame = my_basket.h2o,
-  k = 20, 
+  training_frame = nyc_model.h2o,
+  k = 18, 
   loss = "Quadratic",
   regularization_x = "None", 
   regularization_y = "None", 
   transform = "STANDARDIZE", 
   max_iterations = 2000,
-  seed = 123
+  seed = 42826
 )
+
+check <- as.data.frame(h2o.getFrame(basic_glrm@model$representation_name))
 
 # get top level summary information on our model
 summary(basic_glrm)
@@ -85,7 +93,8 @@ data.frame(
     geom_point() +
     facet_wrap(~ metric, ncol = 1, scales = "free")
 
-t(basic_glrm@model$archetypes)[1:5, 1:5]
+as.data.frame(t(basic_glrm@model$archetypes)) |>
+  select(Arch1, Arch2, Arch3, Arch4, Arch5)
 
 
 p1 <- t(basic_glrm@model$archetypes) %>% 
@@ -103,21 +112,22 @@ p2 <- t(basic_glrm@model$archetypes) %>%
 gridExtra::grid.arrange(p1, p2, nrow = 1)
 
 
-# Re-run model with k = 8
-k8_glrm <- h2o.glrm(
-  training_frame = my_basket.h2o,
-  k = 8, 
+# Re-run model with k = 5
+k5_glrm <- h2o.glrm(
+  training_frame = nyc_model.h2o,
+  k = 5, 
   loss = "Quadratic",
   regularization_x = "None", 
   regularization_y = "None", 
   transform = "STANDARDIZE", 
   max_iterations = 2000,
-  seed = 123
+  seed = 42826
 )
 
 # Reconstruct to see how well the model did
-my_reconstruction <- h2o.reconstruct(k8_glrm, my_basket.h2o, reverse_transform = TRUE)
+my_reconstruction <- h2o.reconstruct(k5_glrm, nyc_model.h2o, reverse_transform = TRUE)
 
+my_reconstruction
 # Raw predicted values
 my_reconstruction[1:5, 1:5]
 
