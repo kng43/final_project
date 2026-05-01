@@ -16,9 +16,9 @@ To classify New York City Census Tracts by typology using dimension reduction an
 
 1. **data_cleaning.R:** This .R Script includes the data cleaning steps to create the dataset used in modeling  
 
-2. **analysis.qmd:** This quarto file includes the code for exploratory data analysis and each clustering model. The first model uses PCA + K-Means Clustering. The second model uses GLRM + Gaussian Mixture Modeling.  
+2. **analysis.qmd:** [View Analysis](analysis.html) This quarto file includes the code for exploratory data analysis and each clustering model. The first model uses PCA + K-Means Clustering. The second model uses GLRM + Gaussian Mixture Modeling.  
 
-3. **writeup.qmd:** This quarto file includes our project motivation, problem statement, research question, model interpretations, and conclusions.  
+3. **writeup.qmd:** [View Writeup](writeup.html) This quarto file includes our project motivation, problem statement, research question, model interpretations, and conclusions.  
 
 4. **README.md:** project documentation
 
