@@ -70,6 +70,7 @@ nyc_2024 <- get_acs(
   key       = credential,
   geometry  = TRUE)
 
+# arrests data
 nyc_arrests <- read_csv("data/NYPD_Arrests_Data.csv") |>
   janitor::clean_names() |>
   filter(!is.na(lon_lat)) |>
@@ -80,6 +81,11 @@ nyc_arrests <- st_as_sf(nyc_arrests,
                         remove = TRUE,
                         crs = 4326)
 
+# schools data
+nyc_schools <- st_read("data/schools/SchoolPoints_APS_2024_08_28.shp") |>
+  st_transform(crs = 4326)
+
+# centers of population data
 nyc_centers <- read_csv(
   "https://www2.census.gov/geo/docs/reference/cenpop2020/tract/CenPop2020_Mean_TR36.txt") |>
   janitor::clean_names() |>
@@ -89,6 +95,16 @@ nyc_centers <- st_as_sf(nyc_centers,
                           coords = c("longitude", "latitude"),
                           remove = TRUE,
                           crs = 4326)  
+
+# third places data
+third_place <- read.csv("data/third_place_index_1.0.csv")
+
+nyc_tracts <- nyc_2022$GEOID
+
+third_place_nyc <- third_place |>
+  filter(geoid %in% nyc_tracts) |>
+  select(GEOID = geoid, park_count, food_beverage_count, traditional_retail_count) |>
+  mutate(GEOID = as.character(GEOID))
 
 ### MERGE AND CLEAN ###
 # drop the margin of error columns from both before merging #
@@ -107,7 +123,7 @@ nyc_combined <- bind_rows(`2022` = nyc_2022_clean,
 ### CREATE NEW VARIABLES TO COMPUTE SHARES AND RATE OF CHANGE ### 
 # 2024 variables (shares and levels) #
 
-nyc_model <- nyc_combined |>
+nyc_acs <- nyc_combined |>
   #renaming for ease
   rename(median_income = B19013_001E,
          median_rent = B25064_001E,
@@ -136,48 +152,67 @@ nyc_model <- nyc_combined |>
 
 # Creating Crime data/variable #
 
-nyc_crime <- st_join(nyc_arrests, nyc_centers, join = st_nearest_feature)
+# add a buffer of 800 meters to each population center
+nyc_centers_buffered <- st_buffer(
+  nyc_centers, 
+  dist = units::set_units(800, "m")
+)
 
-nyc_crime <- nyc_crime |>
+# spatial join the unbuffered shapes to the buffer shapes: arrests
+centers_crime_joined <- st_join(
+  nyc_centers_buffered,
+  nyc_arrests, 
+  join = st_intersects
+)
+
+# count the arrests
+nyc_crime <- centers_crime_joined |>
   st_drop_geometry() |>
   mutate(GEOID = str_glue("{statefp}{countyfp}{tractce}")) |>
   group_by(GEOID, countyfp) |>
   summarize(arrests = n()) |>
   ungroup()
 
-# merging crime data, creating arrests per 1,000 residents, and filtering to 2024 #
+# creating Schools Variable #
 
-nyc_final <- left_join(nyc_model, nyc_crime, by = join_by(GEOID))
+# spatial join the unbuffered shapes to the buffer shapes: schools
+centers_schools_joined <- st_join(
+  nyc_centers_buffered,
+  nyc_schools, 
+  join = st_intersects
+)
+
+# count the schools
+nyc_educ <- centers_schools_joined |>
+  st_drop_geometry() |>
+  mutate(GEOID = str_glue("{statefp}{countyfp}{tractce}")) |>
+  group_by(GEOID) |>
+  summarize(schools = n()) |>
+  ungroup()
+
+# merging crime data, schools data, and filtering to 2024 #
+
+nyc_final <- left_join(nyc_acs, nyc_crime, by = join_by(GEOID))
+
+nyc_final <- left_join(nyc_final, nyc_educ, by = join_by(GEOID))
+
+nyc_final <- left_join(nyc_final, third_place_nyc, by = join_by(GEOID))
 
 nyc_final <- nyc_final |>
   filter(year == 2024) |>
+  #cleaning new arrests and schools variables |>
   mutate(arrests = if_else(is.na(arrests), 0, arrests),
-         arrest_rate = (arrests/B01003_001E)*1000) |>
+         schools = if_else(is.na(schools), 0, arrests)) |>
   select(
     GEOID, NAME, countyfp, geometry,
     # modeling variables
     pct_poverty, unemployment_rate, median_income,
     pct_bachelor, median_rent, median_home_value,
     pct_renter, vacancy_rate, pct_white, pct_black,
-    pct_hispanic, pct_foreign_born, mean_commute, arrest_rate,
+    pct_hispanic, pct_foreign_born, mean_commute, arrests, 
+    schools, park_count, food_beverage_count, traditional_retail_count,
     # change variables
     change_income, change_rent, change_poverty, change_unemployment)
 
 ### Create Shapefile to preserve Geometry ###
-st_write(nyc_final, "data/nyc_final.shp")
-
-# save final modelling dataset
-#nyc_final <- nyc_final |> #drop tracts with missing values on the modeling variables (not change variables) because PCA and K means behave unexpectedly if NAs are present.
-#  drop_na(pct_poverty, unemployment_rate, median_income,
-#          pct_bachelor, median_rent, median_home_value,
-#          pct_renter, vacancy_rate, pct_white, pct_black,
-#          pct_hispanic, pct_foreign_born, mean_commute)
-#saveRDS(nyc_final, "data/nyc_final.rds")
-
-third_place <- read.csv("data/third_place_index_1.0.csv")
-
-nyc_tracts <- nyc_2022$GEOID
-
-third_place_nyc <- third_place |>
-  filter(geoid %in% nyc_tracts) |>
-  select()
+st_write(nyc_final, "data/nyc_final.shp", delete_dsn = TRUE)
