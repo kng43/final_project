@@ -425,11 +425,13 @@ augment(nyc_gmmfit)
 
 tidy(nyc_gmmfit)
 
+nyc5_gmmfit <- Mclust(nyc_glrm, G =5)
+
 # create a dataframe that binds together the IDs, archetypes, and cluster data
 
 nyc_gmmclusters <- bind_cols(
   nyc_final,
-  augment(nyc_gmmfit))
+  augment(nyc5_gmmfit))
 
 # view cluster means on key variables
 nyc_gmmclusters |>
@@ -449,6 +451,8 @@ nyc_gmmclusters |>
     mapping = aes(x = Arch1, y = Arch2, color = factor(cluster)),
     alpha = 0.5
   ) +
+  scale_color_manual(values = c("#e41a1c", "#984ea3", "#4daf4a", 
+                               "#377eb8", "#ff7f00")) +
   labs(
     title = "Gaussian Mixture Modeling with G=8 and GLRM",
     x = "Arch1 (29.0% of Variation)",
@@ -463,6 +467,8 @@ nyc_gmmclusters |>
   mutate(cluster = .class) |>
   ggplot(aes(fill = factor(cluster))) +
   geom_sf() +
+  scale_fill_manual(values = c("#e41a1c", "#984ea3", "#4daf4a", 
+                               "#377eb8", "#ff7f00")) +
   labs(title = "NYC Census Tracts by Cluster (Gaussian Mixture Modeling)",
        fill = "Cluster") +
   theme_minimal()
