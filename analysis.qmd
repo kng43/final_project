@@ -20,192 +20,191 @@ library(factoextra)
 library(broom)
 library(sf)
 library(h2o)
+
+options(scipen = 999)
 ```
 
-```{r}
+## Load Data and Conduct EDA
 
+```{r}
+#| echo: false
 ## Load Data and Prepare Modeling Data
 
 nyc_final <- st_read("data/nyc_final.shp")
+```
 
-# [I think we need to do some exploratory data analysis, here and in the writeup]
-# [since it's part of our analysis process]
+```{r}
+## Exploratory Data Analysis
 
-# drop geometry before modeling
+nyc_final <- nyc_final |>
+  mutate(borough = case_when(
+    contyfp == "005" ~ "Bronx",
+    contyfp == "047" ~ "Brooklyn",
+    contyfp == "061" ~ "Manhattan",
+    contyfp == "081" ~ "Queens",
+    contyfp == "085" ~ "Staten Island"),
+    borough = factor(borough))
+
+## Poverty Rate by Borough
+ggplot(nyc_final |> filter(!is.na(borough)), 
+       aes(x = borough, y = pct_pvr, fill = borough)) +
+  geom_boxplot() +
+  labs(
+    title = "Figure 1.The Bronx Has the Highest and Most Unequal Poverty Rates Across\nNew York City (NYC) Boroughs",
+    subtitle = "\nEach box shows the distribution of poverty rates across census tracts within each borough.\nThe middle line is the median tract, the box covers the middle 50%, and dots are outliers.",
+    x = "Borough",
+    y = "Poverty Rate (%)",
+    caption = "\nSource: American Community Survey 5-Year Estimates, 2020-2024") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+nyc_final |>
+  filter(!is.na(borough)) |>
+  ggplot(aes(x = pct_bch)) +
+  geom_histogram(color = "white", fill = "#8C7AA9") +
+  labs(title = "The distribution of ownership of Bachelor's Degrees is relatively\nnot-skewed across Census Tracts",
+       subtitle = "The center of the distribution seems to be around 25% owning a bachelor's degree",
+       x = "% of Census Tract Population w/ Bachelor's Degree",
+       y = "Frequency",
+       caption = "\nSource: American Community Survey 5-Year Estimates, 2020-2024") +
+  theme_minimal()
+  
+nyc_final |>
+  filter(!is.na(borough)) |>
+  ggplot(aes(fill = pct_rnt)) +
+  geom_sf() +
+  labs(
+    title = "The percentage of the population that are renters varies across\nNew York City Census Tracts",
+    fill = "% Renting",
+    caption = "\nSource: American Community Survey 5-Year Estimates, 2020-2024"
+  ) +
+  theme_minimal()
+```
+
+## Exploration of Missingness
+
+```{r}
+# drop geometry for further exploration
 nyc_data <- nyc_final |>
   st_drop_geometry()
 
-# check for highly correlated predictors [do not assign this to anything]
-# [i've added a recipe step that removes the ID vars for PCA but we need them to
-# identify tracts at the end]
-# [also need to figure out the best way to format this table if we use it]
+nyc_data |>
+  select(-GEOID, -NAME, -contyfp, -borough) |>
+  summarise(across(everything(), ~mean(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") |>
+  filter(pct_missing > 0) |>
+  arrange(desc(pct_missing))
+
+nyc_data |>
+  select(-GEOID, -NAME, -contyfp, -borough) |>
+  summarise(across(everything(), ~mean(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") |>
+  filter(pct_missing > 0) |>
+  ggplot(aes(x = pct_missing)) +
+  geom_histogram(bins = 30, fill = "coral", color = "white") +
+  scale_x_continuous(labels = scales::percent) +
+  theme_minimal() +
+  labs(title = "Figure 2. Distribution of Missing Values Across Variables",
+       subtitle = "\nMost variables are missing in under 8% of tracts, with median home value variable\nthe exception at 16.5%",
+       x = "% of values missing", 
+       y = "Number of variables")
+
+# check for highly correlated predictors
+nyc_data |> 
+  select(-GEOID, -NAME, -contyfp, -borough) |>
+  cor(use = "complete.obs") |>
+  round(2)
+
+# Look for the total number of incomplete cases. Don't just want to drop them
+sum(!complete.cases(nyc_data))
+```
+
+## Prepare Data for Modeling
+
+```{r}
+# removing id variables for GLRM
 nyc_model <- nyc_data |>
   select(-GEOID, -NAME, -contyfp)
 
 nyc_ids <- nyc_data |>
   select(GEOID, NAME, contyfp)
-
-nyc_model |>
-  cor(use = "complete.obs") |>
-  round(2)
-
-sum(!complete.cases(nyc_data))
 ```
-
-## Generalized Low Rank Modeling (GLRM)
-```{r}
-
-h2o.no_progress()  # turn off progress bars
-h2o.init(max_mem_size = "5g")  # connect to H2O instance
-
-# convert data to h2o object
-nyc_model.h2o <- as.h2o(nyc_model)
-
-# run basic GLRM
-basic_glrm <- h2o.glrm(
-  training_frame = nyc_model.h2o,
-  k = 18, 
-  loss = "Quadratic",
-  regularization_x = "None", 
-  regularization_y = "None", 
-  transform = "STANDARDIZE", 
-  max_iterations = 2000,
-  seed = 42826
-)
-
-check <- as.data.frame(h2o.getFrame(basic_glrm@model$representation_name))
-
-# get top level summary information on our model
-summary(basic_glrm)
-
-plot(basic_glrm)
-
-# amount of variance explained by each archetype (aka "pc")
-basic_glrm@model$importance
-
-data.frame(
-    PC  = basic_glrm@model$importance %>% seq_along(),
-    PVE = basic_glrm@model$importance %>% .[2,] %>% unlist(),
-    CVE = basic_glrm@model$importance %>% .[3,] %>% unlist()
-) %>%
-    gather(metric, variance_explained, -PC) %>%
-    ggplot(aes(PC, variance_explained)) +
-    geom_point() +
-    facet_wrap(~ metric, ncol = 1, scales = "free")
-
-as.data.frame(t(basic_glrm@model$archetypes)) |>
-  select(Arch1, Arch2, Arch3, Arch4, Arch5)
-
-
-p1 <- t(basic_glrm@model$archetypes) %>% 
-  as.data.frame() %>% 
-  mutate(feature = row.names(.)) %>%
-  ggplot(aes(Arch1, reorder(feature, Arch1))) +
-  geom_point()
-
-p2 <- t(basic_glrm@model$archetypes) %>% 
-  as.data.frame() %>% 
-  mutate(feature = row.names(.)) %>%
-  ggplot(aes(Arch1, Arch2, label = feature)) +
-  geom_text()
-
-gridExtra::grid.arrange(p1, p2, nrow = 1)
-
-
-# Re-run model with k = 5
-k5_glrm <- h2o.glrm(
-  training_frame = nyc_model.h2o,
-  k = 5, 
-  loss = "Quadratic",
-  regularization_x = "None", 
-  regularization_y = "None", 
-  transform = "STANDARDIZE", 
-  max_iterations = 2000,
-  seed = 42826
-)
-
-# Reconstruct to see how well the model did
-my_reconstruction <- h2o.reconstruct(k5_glrm, nyc_model.h2o, reverse_transform = TRUE)
-
-my_reconstruction
-# Raw predicted values
-my_reconstruction[1:5, 1:5]
-
-# Round values to whole integers
-my_reconstruction[1:5, 1:5] %>% round(0)
-
-```
-
-## Gaussian Mixture Modeling (GMM)
-```{r}
-library(mclust)
-
-gmm_fit <- Mclust(glrm_repr)
-
-clusters <- gmm_fit$classification
-
-glrm_results <- nyc_data |>
-  sf::st_drop_geometry() |>
-  dplyr::select(GEOID) |>
-```
-
 
 ## Principle Component Analysis (PCA)
+
 ```{r}
-# select only the modelling variables, dropping ID columns
+# replace infinite values with NAs
 nyc_vars <- nyc_data |>
-  select(-GEOID, -NAME, -contyfp) |>
-  mutate(across(everything(), as.numeric))
+  mutate(across(everything(), ~ ifelse(is.infinite(.), NA, .)))
 
-# impute missing values and replace infinite values with column means
-nyc_vars_imputed <- nyc_vars |>
-  mutate(across(everything(), ~ ifelse(is.infinite(.), NA, .))) |>
-  mutate(across(everything(), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) |>
-  as.data.frame()
+# create a pca recipe and impute missing values
+pca_rec <- recipe(~ ., data = nyc_vars) |>
+  add_role(GEOID, NAME, contyfp, borough, new_role = "id") |>
+  step_rm(has_role("id")) |>
+  step_impute_mean(all_numeric_predictors()) |>
+  step_nzv(all_predictors()) |>
+  step_normalize(all_predictors()) |>
+  step_pca(all_predictors(), num_comp = 7) 
 
-# remove any columns with zero variance
-nyc_vars_imputed <- nyc_vars_imputed[, apply(nyc_vars_imputed, 2, sd) > 0]
+# fit PCA
+pca_rec_fit <- pca_rec %>%
+  # run prep to prepare recipe
+  prep()
 
-# run PCA
-pca_fit <- prcomp(nyc_vars_imputed, scale. = TRUE, center = TRUE)
+# obtain summary metrics 
+tidy(pca_rec_fit, number = 5, type = "variance") |>
+  filter(terms == "cumulative percent variance") |>
+  slice_min(value, n = 10)
 
-# check cumulative variance explained
-summary(pca_fit)
+# obtain loadings 
+tidy(pca_rec_fit, number = 5, type = "coef") |>
+  filter(component == "PC1") |>
+  slice_max(order_by = abs(value), n = 7)
 
-# scree plot
-data.frame(
-  component = 1:length(pca_fit$sdev),
-  variance = (pca_fit$sdev^2 / sum(pca_fit$sdev^2)) * 100) |>
-  ggplot(aes(x = component, y = variance)) +
+#scree plot
+tidy(pca_rec_fit, number = 5, type = "variance") |>
+  filter(terms == "percent variance") |>
+  ggplot(aes(x = component, y = value)) +
   geom_point() +
   geom_line() +
   labs(
-    title = "Figure 2. Scree Plot - Variance Explained by Each Principal Component",
-    subtitle = "The elbow around component 5 indicates diminishing returns. Nine components are retained to explain 80.2% of total variance.",
+    title = "PCA Scree Plot - Variance Explained by Each Principal Component",
+    subtitle = "The elbow around component 7 indicates diminishing returns. Seven components are\nretained to explain 67.2% of total variance.",
     x = "Principal Component",
     y = "Percent of Variance Explained") +
   theme_minimal()
 
-# extract 9 components
-pca_scores <- as.data.frame(pca_fit$x[, 1:9])
+# apply loadings to original data, keeping the first 7 components (small bend)
+nyc_pca <- pca_rec_fit |>
+  bake(new_data = nyc_vars) |>
+  select(1:7)
+
+nyc_pca
+
 ```
 
 ## K-Means Clustering
+
 ```{r}
-set.seed(20200205)
+set.seed(4282026)
 
 # set up 5-fold cross validation
-nyc_cv <- vfold_cv(pca_scores, v = 5)
+nyc_cv <- vfold_cv(nyc_vars, v = 5)
 
 # k-means spec with num_clusters = tune()
 kmeans_spec <- k_means(
-  num_clusters = tune()) |>
-  set_engine("stats", nstart = 100)
+  num_clusters = tune()
+  ) |>
+  set_engine(
+    "stats", 
+    nstart = 100
+    )
 
 # workflow
-kmeans_wflow <- workflow() |>
-  add_variables(outcomes = c(), predictors = everything()) |>
-  add_model(kmeans_spec)
+kmeans_wflow <- workflow(
+  preprocessor = pca_rec,
+  spec = kmeans_spec
+)
 
 # tuning grid considering 1 to 10 clusters
 clust_num_grid <- grid_regular(
@@ -214,7 +213,7 @@ clust_num_grid <- grid_regular(
 
 # tune the number of clusters
 res <- tune_cluster(
-  kmeans_wflow,
+  object = kmeans_wflow,
   resamples = nyc_cv,
   grid = clust_num_grid,
   control = control_grid(save_pred = TRUE, extract = identity),
@@ -250,21 +249,221 @@ res_metrics |>
     y = "Avg Silhouette Width over 5 Folds") +
   theme_minimal()
 
-# K means final model - 5 clusters chosen based on elbow and silhouette plots
-set.seed(20200205)
+# K means final model - Silhouette plot says 3, choosing 5 clusters based on elbow plot
 
-final_fit <- kmeans(pca_scores, centers = 5, nstart = 100)
+# create a k-means specification with num_clusters = 5
+kmeans_spec_final <- k_means(
+  num_clusters = 5
+) %>%
+  set_engine(
+    "stats",
+    nstart = 100
+  )
 
-# view cluster sizes
-table(final_fit$cluster)
+# create the final workflow
+kmeans_wflow_final <- workflow(
+  preprocessor = pca_rec,
+  spec = kmeans_spec_final
+)
 
-# combine results - add cluster assignments back to original data
-nyc_clusters <- nyc_data |>
-  mutate(cluster = final_fit$cluster)
+# fit the final model
+kmfinal_fit <- fit(
+  kmeans_wflow_final,
+  data = nyc_vars
+)
+
+# examine the cluster means 
+tidy(kmfinal_fit)
+
+# create a dataframe that binds together the IDs, PCA, and cluster data
+nyc_kmclusters <- bind_cols(
+  nyc_final,
+  kmfinal_fit |>
+    extract_recipe() |>
+    bake(nyc_vars),
+  cluster = kmfinal_fit |>
+    extract_cluster_assignment() |>
+    pull(.cluster)
+)
 
 # view cluster means on key variables
-nyc_clusters |>
+nyc_kmclusters |>
+  st_drop_geometry() |>
   group_by(cluster) |>
-  summarise(across(c(pct_pvr, mdn_ncm, pct_bch, mdn_rnt, pct_wht, pct_blc, pct_hsp),
-                   \(x) mean(x, na.rm = TRUE)))
+  summarise(across(c(mdn_ncm, mdn_rnt, pct_bch, pct_wht, pct_pvr, pct_hsp, fd_bvr_), \(x) mean(x, na.rm = TRUE)))
+```
+
+### Visualizing the Clusters
+
+```{r}
+# create a plot of the clusters with PC1 and PC2 as the x and y axis
+nyc_kmclusters |>
+  mutate(cluster = str_replace(cluster, "Cluster_", "")) |>
+  ggplot() +
+  geom_point(
+    mapping = aes(x = PC1, y = PC2, color = factor(cluster)),
+    alpha = 0.5
+  ) +
+  scale_color_manual(values = c("#e41a1c", "#984ea3", "#4daf4a",
+                                "#377eb8", "#ff7f00")) +
+  labs(
+    title = "K-Means with K = 5 and PCA",
+    x = "PC1 (23.7% of Variation)",
+    y = "PC2 (14.5% of Variation)",
+    color = "Cluster"
+  ) + 
+  theme_minimal() +
+  guides(text = NULL)
+
+# map the clusters to NYC Census Tracts geographically
+nyc_kmclusters |>
+  mutate(cluster = str_replace(cluster, "Cluster_", "")) |>
+  ggplot(aes(fill = cluster)) +
+  geom_sf() +
+  scale_fill_manual(values = c("#e41a1c", "#984ea3", "#4daf4a", 
+                               "#377eb8", "#ff7f00")) +
+  labs(title = "NYC Census Tracts by Cluster (K-Means)",
+       fill = "Cluster") +
+  theme_minimal()
+```
+
+## Generalized Low Rank Modeling (GLRM)
+
+```{r}
+#| echo: false
+h2o.no_progress()  # turn off progress bars
+h2o.init(max_mem_size = "5g")  # connect to H2O instance
+```
+
+```{r}
+# convert data to h2o object
+nyc_model.h2o <- as.h2o(nyc_model)
+
+# run basic GLRM
+basic_glrm <- h2o.glrm(
+  training_frame = nyc_model.h2o,
+  k = 22, 
+  loss = "Quadratic",
+  multi_loss = "Categorical",
+  regularization_x = "None", 
+  regularization_y = "None", 
+  transform = "STANDARDIZE", 
+  max_iterations = 2000,
+  seed = 4282026
+)
+
+# get top level summary information on our model
+## model converged at 881 iterations
+summary(basic_glrm)
+
+plot(basic_glrm)
+
+archetypes <- as.data.frame(basic_glrm@model$archetypes) |>
+  head(1) |>
+  pivot_longer(cols = everything(),
+               names_to = "variables",
+               values_to = "value")
+
+archetypes |>
+  filter(!str_detect(variables, "borough")) |>
+  slice_max(order_by = abs(value), n = 7)
+
+# amount of variance explained by each archetype (aka "pc")
+basic_glrm@model$importance
+
+# scree plot
+data.frame(
+    PC  = basic_glrm@model$importance %>% seq_along(),
+    PVE = basic_glrm@model$importance %>% .[2,] %>% unlist(),
+    CVE = basic_glrm@model$importance %>% .[3,] %>% unlist()
+) %>%
+    gather(metric, variance_explained, -PC) %>%
+    ggplot(aes(PC, variance_explained)) +
+    geom_point() +
+    facet_wrap(~ metric, ncol = 1, scales = "free") +
+  theme_minimal()
+
+t(basic_glrm@model$archetypes)[1:10, 1:5]
+
+# Based on the scree plot, choosing a rank of k = 5
+k5_glrm <- h2o.glrm(
+  training_frame = nyc_model.h2o,
+  k = 5, 
+  loss = "Quadratic",
+  multi_loss = "Categorical",
+  regularization_x = "None", 
+  regularization_y = "None", 
+  transform = "STANDARDIZE", 
+  max_iterations = 2000,
+  seed = 4282026
+)
+
+nyc_glrm <- as.data.frame(h2o.getFrame(k5_glrm@model$representation_name))
+
+# Reconstruct to see how well the model did
+my_reconstruction <- h2o.reconstruct(k5_glrm, nyc_model.h2o, reverse_transform = TRUE)
+
+my_reconstruction[1:5][1:5] %>% round(0)
+
+```
+
+## Gaussian Mixture Modeling (GMM)
+
+```{r}
+set.seed(4282026)
+
+# fit GMM
+nyc_gmmfit <- Mclust(nyc_glrm)
+
+#plot fitted model BIC and uncertainty
+plot(nyc_gmmfit, what = "BIC")
+
+# Best model has G = 8
+glance(nyc_gmmfit)
+
+augment(nyc_gmmfit)
+
+tidy(nyc_gmmfit)
+
+# create a dataframe that binds together the IDs, archetypes, and cluster data
+
+nyc_gmmclusters <- bind_cols(
+  nyc_final,
+  augment(nyc_gmmfit))
+
+# view cluster means on key variables
+nyc_gmmclusters |>
+  st_drop_geometry() |>
+  group_by(.class) |>
+  summarise(across(c(pct_rnt, prk_cnt, chng_rn, mdn_rnt, chng_nc, chng_pv, mdn_hm_), \(x) mean(x, na.rm = TRUE)))
+```
+
+### Visualizing the Clusters
+
+```{r}
+# create a plot of the clusters with Arch1 and Arch2 as the x and y axis
+nyc_gmmclusters |>
+  mutate(cluster = .class) |>
+  ggplot() +
+  geom_point(
+    mapping = aes(x = Arch1, y = Arch2, color = factor(cluster)),
+    alpha = 0.5
+  ) +
+  labs(
+    title = "Gaussian Mixture Modeling with G=8 and GLRM",
+    x = "Arch1 (29.0% of Variation)",
+    y = "Arch2 (20.4% of Variation)",
+    color = "Cluster"
+  ) + 
+  theme_minimal() +
+  guides(text = NULL)
+
+# map the clusters to NYC Census Tracts geographically
+nyc_gmmclusters |>
+  mutate(cluster = .class) |>
+  ggplot(aes(fill = factor(cluster))) +
+  geom_sf() +
+  labs(title = "NYC Census Tracts by Cluster (Gaussian Mixture Modeling)",
+       fill = "Cluster") +
+  theme_minimal()
 ```
