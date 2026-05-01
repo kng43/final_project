@@ -1,5 +1,5 @@
 ---
-title: "Final Project - Classifying New York Census Tracts"
+title: "Classifying New York City Neighborhoods: A Data-Driven Approach to Urban Typologies"
 author: "Sunduss Hamdan and Kaela Girod"
 format: html
 embed-resources: true
@@ -59,11 +59,43 @@ logic translates directly to an urban setting: New York City's neighborhoods are
 more uniform than rural communities, and a typology-based approach offers the same 
 potential to improve how investments are targeted.
 
+Figure 1 below illustrates the distribution of poverty rates across census tracts within each NYC borough. The Bronx stands out as the most deprived borough, with both the highest median poverty rate and the widest spread across its tracts, indicating persistent and widespread deprivation. Manhattan presents a particularly striking pattern; despite having a relatively low median poverty rate, it contains numerous high-poverty outlier tracts, reflecting the extreme inequality between its wealthiest and most deprived neighborhoods. Even in comparatively affluent boroughs like Queens and Staten Island, individual tracts with very high poverty rates exist. This variation (both between and within boroughs) shows exactly why relying on a single indicator or aggregating data at the borough level is insufficient for effective policy targeting. A more granular, data-driven approach that captures the full complexity of neighborhood conditions is needed, which is what this project sets out to provide.
+
 ```{r}
 #| echo: false
+#| message: false
+#| results: false
+#| warning: false
 
 library(tidyverse)
-### MAYBE INCLUDE SOME EXPLORATORY AND EXPLANATORY ANALYSIS VISUALS OF KEY VARIABLES OR DESCRIPTIVE STATS ON NEW YORK - SUNDUSS CAN DO THIS ONCE THE DATASET IS UP AND RUNNING 
+library(sf)
+
+nyc_final <- st_read("data/nyc_final.shp")
+
+nyc_data <- nyc_final |>
+  st_drop_geometry()
+
+nyc_data <- nyc_data |>
+  mutate(borough = case_when(
+    contyfp == "005" ~ "Bronx",
+    contyfp == "047" ~ "Brooklyn",
+    contyfp == "061" ~ "Manhattan",
+    contyfp == "081" ~ "Queens",
+    contyfp == "085" ~ "Staten Island"))
+
+## Figure 1 visual
+ggplot(nyc_data |> filter(!is.na(borough)), 
+       aes(x = borough, y = pct_pvr, fill = borough)) +
+  geom_boxplot() +
+  labs(
+    title = "Figure 1.The Bronx Has the Highest and Most Unequal Poverty Rates Across\nNew York City (NYC) Boroughs",
+    subtitle = "\nEach box shows the distribution of poverty rates across census tracts within each borough.\nThe middle line is the median tract, the box covers the middle 50%, and dots are outliers.",
+    x = "Borough",
+    y = "Poverty Rate (%)",
+    caption = "\nSource: American Community Survey 5-Year Estimates, 2020-2024") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
 ```
 
 ## 3. Data and Variable Selection - EDIT TO VERIFY ACCURACY
@@ -102,8 +134,7 @@ the vintage endpoints might suggest. This is a structural feature of ACS 5-year
 estimates rather than a choice we made, and we flag it as a limitation of our 
 approach.
 
-Our 18 modeling variables are used as inputs to our dimensionality reduction and clustering models. Census tracts with missing values on any modelling variable are excluded from the analysis (why? I don't think we need to do that, let the method do it. We can also impute median for variables with not too many missing). Missing data arise most commonly in tracts that are entirely renter-occupied, which have no median home value, and in tracts with very few commuters, which have no reliable commute time estimate. The list of variables is included in @tbl-variables below.
-
+Our 18 modeling variables are used as inputs to our dimensionality reduction and clustering models. The list of variables is included in @tbl-variables below.
 
 ```{r}
 #| label: tbl-variables
@@ -118,10 +149,47 @@ Justification <- c("Core deprivation indicator; directly named in proposal", "Ca
 variable_table <- tibble(Dimension, Variable, Construction, Justification)
 
 knitr::kable(variable_table)
-
 ```
 
+Before running our models, we also checked how much data we were missing across our variables. Figure 2 below shows that most variables are missing in fewer than 8% of tracts, which is reassuringly low. The exception is median home value, which is missing in around 16.5% of tracts. This is expected since tracts that are entirely renter-occupied have no median home value to report. Rather than dropping these tracts from the analysis, we replaced missing values with the column mean, which keeps our sample size intact.
 
+```{r}
+#| echo: false
+#| message: false
+#| results: false
+#| warning: false
+
+library(tidyverse)
+library(sf)
+
+nyc_final <- st_read("data/nyc_final.shp")
+
+nyc_data <- nyc_final |>
+  st_drop_geometry()
+
+nyc_vars <- nyc_data |>
+  select(-GEOID, -NAME, -contyfp) |>
+  mutate(across(everything(), as.numeric))
+
+nyc_vars |>
+  summarise(across(everything(), ~mean(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") |>
+  filter(pct_missing > 0) |>
+  arrange(desc(pct_missing))
+
+nyc_vars |>
+  summarise(across(everything(), ~mean(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") |>
+  filter(pct_missing > 0) |>
+  ggplot(aes(x = pct_missing)) +
+  geom_histogram(bins = 30, fill = "coral", color = "white") +
+  scale_x_continuous(labels = scales::percent) +
+  theme_minimal() +
+  labs(title = "Figure 2. Distribution of Missing Values Across Variables",
+       subtitle = "\nMost variables are missing in under 8% of tracts, with median home value variable the exception at 16.5%",
+       x = "% of values missing", 
+       y = "Number of variables")
+```
 
 ```{r}
 #| echo: false
@@ -169,14 +237,13 @@ knitr::kable(variable_table)
 ## 4. Methodology
 Our analysis compares two methods of clustering census tracts. The first method uses Generalized Low Rank Models (GLRM) to reduce the complexity of our data, followed by Gaussian Mixture Modeling (GMM) for clustering neighborhood groups. The second method is simpler, using Principal Component Analysis (PCA) for dimension reduction and K-means clustering to compare for the final classification. Each step is described below.
 
-### Method 1
+### 4.1 Method 1
+#### 4.1.1 Dimension Reduction with Generalized Low Rank Modeling
+Our primary dimension reduction method is Generalized Low Rank Models (GLRM), implemented using library(h2o). Unlike Principle Component Analysis (PCA; described in further detail below), which is limited to numeric data and assumes linear relationships between variables, GLRM is a more flexible approach that can handle mixed data types, including numeric, categorical, ordinal, and boolean variables. This matters for our project because our dataset includes a mix of continuous measures like median income and rates like poverty rate, alongside count-based variables like arrest rate. 
 
-#### 4.1 Dimension Reduction with Generalized Low Rank Modeling
+GLRM works by decomposing our original data matrix into two smaller matrices, referred to as X and Y. The matrix X represents each census tract projected onto a smaller dimensional space, and the matrix Y represents each variable projected onto that same space. Together, these two matrices produce an approximate reconstruction of the original data. The reduced dimensions produced by this process are called archetypes, and they serve the same purpose as principal components in PCA, capturing the most important patterns in the data in a condensed form.
 
-
-
-#### 4.2 Clustering with Gaussian Mixture Modeling
-
+#### 4.1.2 Clustering with Gaussian Mixture Modeling
 Our primary clustering method is Gaussian Mixture Modeling (GMM), 
 implemented using `library(mclust)`.
 
@@ -209,10 +276,9 @@ output plots. Nevertheless, the end result is the same; we are still selecting t
 
 We do not automatically accept the number of clusters that scores best on BIC. If the statistically preferred solution produces neighborhood types that are too similar to one another to be meaningfully different in a policy context, we will consider a solution with fewer clusters and explain our reasoning for doing so.
 
-### Method 2
-
-#### 4.3 Dimension Reduction with PCA
-We begin with [INSERT NO. OF FINAL VARIABLES] variables across five thematic dimensions. Many of these 
+### 4.2 Method 2
+#### 4.2.1 Dimension Reduction with PCA
+We begin with 18 variables across five thematic dimensions. Many of these 
 variables are likely to be correlated with one another. For example, poverty 
 rate and unemployment rate tend to move together, as do median income and 
 bachelor's degree share. When highly correlated variables are fed directly into 
@@ -220,7 +286,7 @@ a clustering algorithm, they effectively get counted twice, overweighting the
 dimension of variation they share and distorting the resulting groups.
 
 To address this, we use Principal Component Analysis (PCA) before clustering. 
-PCA takes our [NO. OF VARIABLES] variables and transforms them into a smaller set of new 
+PCA takes our 18 variables and transforms them into a smaller set of new 
 variables called principal components. Each component is a weighted combination 
 of the original variables, and the components are constructed so that they are 
 uncorrelated with one another. The first component captures the largest share 
@@ -230,14 +296,85 @@ the information in the original data with much less redundancy. Because our vari
 percentages, minutes) we normalize all variables before running PCA by 
 subtracting the mean and dividing by the standard deviation so that no single variable dominates due to its scale alone.
 
-To decide how many components to retain, we use a scree plot and inspect the 
-cumulative proportion of variance explained by each additional component. We 
-retain enough components to explain at least 80% [THIS WILL NEED TO BE CHANGED WITH OUR ACTUAL %] of the total variation in the 
-data, following standard practice. The retained components are then passed 
-forward as inputs to the clustering stage.
+To decide how many components to retain, we use a scree plot and inspect the cumulative proportion of variance explained by each additional component. As shown in Figure 3, the plot reveals a clear elbow around the fifth component, after which each additional component contributes diminishing returns. However, applying our threshold of retaining enough components to explain at least 80% of the total variation in the data, we retain nine components, which together explain 80.2% of the cumulative variance. The retained components are then passed forward as inputs to the clustering stage.
 
-#### 4.4 K-Means Clustering
+```{r}
+#| echo: false
+#| message: false
+#| results: false
+#| warning: false
 
+library(tidymodels)
+library(mclust)
+library(tidyclust)
+library(factoextra)
+library(broom)
+library(h2o)
+
+## PCA Scree Plot Component No. 
+
+## Load Data and Prepare Modeling Data
+
+nyc_final <- st_read("data/nyc_final.shp")
+
+# [I think we need to do some exploratory data analysis, here and in the writeup]
+# [since it's part of our analysis process]
+
+# drop geometry before modeling
+nyc_data <- nyc_final |>
+  st_drop_geometry()
+
+# check for highly correlated predictors [do not assign this to anything]
+# [i've added a recipe step that removes the ID vars for PCA but we need them to
+# identify tracts at the end]
+# [also need to figure out the best way to format this table if we use it]
+nyc_data |>
+  select(-GEOID, -NAME, -contyfp) |>
+  cor(use = "complete.obs") |>
+  round(2)
+
+sum(!complete.cases(nyc_data))
+
+# select only the modelling variables, dropping ID columns
+nyc_vars <- nyc_data |>
+  select(-GEOID, -NAME, -contyfp) |>
+  mutate(across(everything(), as.numeric))
+
+# impute missing values and replace infinite values with column means
+nyc_vars_imputed <- nyc_vars |>
+  mutate(across(everything(), ~ ifelse(is.infinite(.), NA, .))) |>
+  mutate(across(everything(), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) |>
+  as.data.frame()
+
+# remove any columns with zero variance
+nyc_vars_imputed <- nyc_vars_imputed[, apply(nyc_vars_imputed, 2, sd) > 0]
+
+# run PCA
+pca_fit <- prcomp(nyc_vars_imputed, scale. = TRUE, center = TRUE)
+
+# check cumulative variance explained
+summary(pca_fit)
+
+# scree plot
+data.frame(
+  component = 1:length(pca_fit$sdev),
+  variance = (pca_fit$sdev^2 / sum(pca_fit$sdev^2)) * 100) |>
+  ggplot(aes(x = component, y = variance)) +
+  geom_point() +
+  geom_line() +
+  labs(
+    title = "Figure 3. Scree Plot - Variance Explained by Each Principal Component",
+    subtitle = "Nine components are retained to explain 80.2% of total variance.",
+    x = "Principal Component",
+    y = "Percent of Variance Explained") +
+  theme_minimal()
+
+# extract 9 components
+pca_scores <- as.data.frame(pca_fit$x[, 1:9])
+
+```
+
+#### 4.2.2 K-Means Clustering
 We use K-means clustering as our clustering step with this simpler method. K-means works by grouping census tracts into a fixed number of clusters, where each tract is 
 assigned to the cluster whose center (called the centroid) it is closest to. 
 
@@ -272,26 +409,87 @@ a closely related study, the statistically optimal number of clusters and the
 most interpretable number are not always the same. As with GMM, we do not automatically accept the statistically optimal number of clusters.
 
 ## 5. Results
+For method 2, We first applied PCA to our 18 variables to reduce the complexity of the data before clustering. As shown in Figure 3 above, the first principal component explains approximately 27% of the total variance, with each subsequent component explaining progressively less. We retained nine components, which together explain 80.2% of the variance in the data, in line with the 80% threshold we set out in our methodology.
+
+We then applied K-means clustering to the nine principal components. To decide on the number of clusters, we used two diagnostic plots: the elbow plot and the silhouette plot. The silhouette plot favored two clusters, while the elbow plot suggested that the gains from adding more clusters become small after around five. We chose five clusters because, while two clusters is statistically cleaner, it is not very useful from a policy perspective; it would essentially just divide NYC into deprived and non-deprived neighborhoods, which a single indicator like poverty rate could already tell us.
+
+We then applied K-means clustering to the nine principal components. To pick the number of clusters, we looked at two diagnostic plots. The silhouette plot (Figure 4) suggested two clusters was the best fit statistically, as the score was highest at K=2 and fell after that. The elbow plot (Figure 5) showed that the within-cluster variance stopped falling as sharply after around five clusters, which is where we identified the elbow. The two plots did not agree, so we had to use our judgment. We chose five clusters because two clusters would not be particularly useful for our purposes since it would just divide NYC neighborhoods into a binary classification of deprived and non-deprived, which we could do with a single variable like poverty rate, defeating the objective of this policy project.
 
 ```{r}
 #| echo: false
+#| message: false
+#| results: false
+#| warning: false
 
-### INCLUDE VISUALS HERE
+## K Means Clustering No. 
+
+set.seed(20200205)
+
+# set up 5-fold cross validation
+nyc_cv <- vfold_cv(pca_scores, v = 5)
+
+# k-means spec with num_clusters = tune()
+kmeans_spec <- k_means(
+  num_clusters = tune()) |>
+  set_engine("stats", nstart = 100)
+
+# workflow
+kmeans_wflow <- workflow() |>
+  add_variables(outcomes = c(), predictors = everything()) |>
+  add_model(kmeans_spec)
+
+# tuning grid considering 1 to 10 clusters
+clust_num_grid <- grid_regular(
+  num_clusters(),
+  levels = 10)
+
+# tune the number of clusters
+res <- tune_cluster(
+  kmeans_wflow,
+  resamples = nyc_cv,
+  grid = clust_num_grid,
+  control = control_grid(save_pred = TRUE, extract = identity),
+  metrics = cluster_metric_set(sse_within_total, silhouette_avg))
+
+# collect metrics
+res_metrics <- res |>
+  collect_metrics()
+
+# silhouette plot
+res_metrics |>
+  filter(.metric == "silhouette_avg") |>
+  ggplot(aes(x = num_clusters, y = mean)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(
+    title = "Figure 4. Silhouette Plot",
+    x = "Number of Clusters",
+    y = "Avg Silhouette Width over 5 Folds") +
+  theme_minimal()
+
+# elbow plot
+res_metrics |>
+  filter(.metric == "sse_within_total") |>
+  ggplot(aes(x = num_clusters, y = mean)) +
+  geom_point() +
+  geom_line() +
+  scale_x_continuous(breaks = 1:10) +
+  labs(
+    title = "Figure 5. Elbow Plot",
+    x = "Number of Clusters",
+    y = "Mean WSS over 5 Folds") +
+  theme_minimal()
+
 ```
 
-## 6. Discussion
+To label each cluster, we calculated the mean value of a set of key variables across all tracts within each cluster. We focused on poverty rate, median household income, bachelor's degree share, median rent, and racial and ethnic composition, because these variables most directly capture household welfare and living standards, which is what we are ultimately trying to understand. We then used these cluster means to characterize each group and assign it a label. The five clusters each tell a different story about what kind of neighborhood they represent. Cluster 1 stands out because it combines very high poverty (46%) with relatively high incomes and rents, suggesting these are mixed neighborhoods with significant inequality within them (likely parts of Manhattan where very wealthy and very poor residents live in close proximity). Cluster 2 is the most affluent group, with the highest median income ($154k), the highest share of residents with a bachelor's degree (39%), and the lowest poverty rate (10%). Cluster 3 has moderate poverty and is predominantly Black (67%), capturing a set of neighbourhoods that face deprivation but in a different way to Cluster 4, which has the highest poverty rate (32%), the lowest median income ($47k), and is predominantly Hispanic (53%). Cluster 5 sits in the middle with moderate income, moderate rent, and racially mixed, likely reflecting outer borough neighborhoods like parts of Queens and Staten Island.
 
-```{r}
-#| echo: false
+## 6. Policy Implications
 
-### INCLUDE VISUALS HERE
-```
+## 7. Conclusion
 
-## 7. Policy Implications [combine with conclusion if needs be]
-
-## 8. Conclusion
-
-## References
+## Bibliography
 Center for New York City Affairs. "While the Top Three Percent of Wage Earners Get Richer, New York City's Low Wage Workers Risk Greater Poverty." 2024. https://www.centernyc.org/reports-briefs/while-the-top-three-percent-of-wage-earners-get-richer-new-york-citys-low-wage-workers-risk-greater-poverty
 
 New York City Comptroller. "The Racial Wealth Gap in New York." December 6, 2023. https://comptroller.nyc.gov/reports/the-racial-wealth-gap-in-new-york/
